@@ -9,6 +9,52 @@ An ESP32 wired to the robot's internal debug port, running
 [OpenNeato](https://github.com/renjfk/OpenNeato). Check that OpenNeato's own web UI works
 (including **Manual** driving and the LIDAR view) before installing this add-on.
 
+### Which ESP32
+
+OpenNeato needs an **ESP32-C3, ESP32-S3 or original ESP32 with at least 4 MB of flash**. 2 MB
+boards won't work, because the firmware keeps two 1.6 MB update slots. Other chips, such as
+the C6, H2 and S2, aren't supported, even though they come in tiny boards.
+
+The board has to fit under the robot's mainboard, so small is better:
+
+| Board | Size (approx.) | Notes |
+|---|---|---|
+| **ESP32-C3 Super Mini** (recommended) | 22.5 × 18 mm | The board OpenNeato's author uses. Cheapest. Buy it **without pre-soldered pins** |
+| Seeed XIAO ESP32-C3 | 21 × 17.5 mm | Same chip, with an **external antenna** you can route out from under the mainboard. Pick this if Wi-Fi is weak where the robot works |
+| Seeed XIAO ESP32-S3 | 21 × 17.5 mm | Also works. External antenna too. More flash than needed |
+
+A bare ESP32-C3 module is smaller still, but you would have to add your own USB flashing setup.
+It's not worth the hassle.
+
+### Wiring
+
+The D7's debug port is a **4-pin JST XH (2.54 mm)** connector on the mainboard. A pre-crimped
+JST XH 4-pin cable (about 100 mm) is the easiest way to connect to it. Reading left to right,
+the robot labels the pins **RX, 3.3V, TX, GND**. Cross the data lines:
+
+| Robot pin | ESP32 pin |
+|---|---|
+| RX | TX |
+| 3.3V | 3V3 |
+| TX | RX |
+| GND | GND |
+
+* **Swapping TX and RX is the most common mistake.** If OpenNeato can't talk to the robot,
+  check those two first. You can also change the UART pins in OpenNeato under
+  *Settings → Device → UART Pins*.
+* The robot's 3.3 V pin powers the ESP32, so it needs no USB cable, regulator or level
+  shifter.
+* **Flash OpenNeato over USB before you install the board.** Once it's inside the robot, USB
+  is out of reach, and updates go over Wi-Fi (OTA). If the board can't join your Wi-Fi, it
+  starts its own `neato-ap` access point.
+* Wrap the board in foam, or insulate it some other way, so it can't short against the
+  mainboard.
+* Wi-Fi bursts draw roughly 300 mA. If the ESP32 resets at random, solder a 100–470 µF
+  capacitor across its 3V3 and GND pins.
+
+See OpenNeato's [user guide](https://github.com/renjfk/OpenNeato/blob/main/docs/user-guide.md)
+for photos and the flashing tool.
+
 ## ⚠️ Safety: stairs
 
 Room cleaning drives the robot in OpenNeato's *manual mode* (the robot's TestMode). OpenNeato
