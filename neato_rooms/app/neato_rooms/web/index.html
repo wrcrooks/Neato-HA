@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1d2733">
+  <title>Neato Rooms</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="title">Neato Rooms</div>
+    <div class="chips">
+      <span id="chip-conn" class="chip off">offline</span>
+      <span id="chip-batt" class="chip">–%</span>
+      <span id="chip-state" class="chip">–</span>
+    </div>
+  </header>
+
+  <div id="mission" class="mission hidden">
+    <div class="mission-text"><strong id="mission-kind"></strong> <span id="mission-msg"></span></div>
+    <div class="progress"><div id="mission-bar"></div></div>
+    <button id="btn-cancel" class="small danger">Stop</button>
+  </div>
+
+  <main>
+    <canvas id="map"></canvas>
+    <div id="map-empty" class="map-empty hidden">No map yet. Open <b>Map</b> below to create one.</div>
+    <div id="hint" class="hint hidden"></div>
+    <div class="map-tools">
+      <button id="btn-center" title="Centre on robot" aria-label="Centre on robot">◎</button>
+      <button id="btn-fit" title="Fit map" aria-label="Fit map">⤢</button>
+    </div>
+  </main>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="clean" class="active">Clean</button>
+    <button role="tab" data-tab="mapping">Map</button>
+    <button role="tab" data-tab="areas">Rooms</button>
+  </nav>
+
+  <section class="panel" id="tab-clean">
+    <div id="clean-list" class="area-list"></div>
+    <p id="clean-empty" class="muted">Draw rooms or zones in the <b>Rooms</b> tab, then pick them here (or tap them on the map).</p>
+    <div class="row">
+      <label class="muted">Passes
+        <select id="passes"><option>1</option><option>2</option><option>3</option></select>
+      </label>
+      <button id="btn-clean" class="primary grow" disabled>Clean selected</button>
+    </div>
+    <div class="row">
+      <button id="btn-dock" class="grow">Return to dock</button>
+    </div>
+    <details>
+      <summary>Robot's own cleaning</summary>
+      <div class="row">
+        <button data-native="house" class="grow">Whole house</button>
+        <button data-native="spot" class="grow">Spot</button>
+        <button data-native="stop" class="grow">Stop</button>
+      </div>
+    </details>
+  </section>
+
+  <section class="panel hidden" id="tab-mapping">
+    <div id="map-idle">
+      <p class="muted">Put the robot on its dock first. The dock becomes the map origin.</p>
+      <label class="check"><input type="checkbox" id="extend-map"> Extend the existing map instead of starting over</label>
+      <div class="row">
+        <button id="btn-explore" class="primary grow">Auto-explore</button>
+        <button id="btn-manual-map" class="grow">Drive it myself</button>
+      </div>
+      <div class="row">
+        <button id="btn-setpose" class="grow">Set robot position</button>
+        <button id="btn-delete-map" class="danger grow">Delete map</button>
+      </div>
+      <details>
+        <summary>Calibrate (do this once after wiring the robot)</summary>
+        <p class="muted small">Place the robot on open floor about 1 m from walls. It will spin in place a few times
+          and work out its wheel base and LIDAR direction. Copy the suggested values into the add-on's
+          configuration.</p>
+        <div class="row"><button id="btn-calibrate" class="grow">Run calibration</button></div>
+        <pre id="calib-result" class="small hidden"></pre>
+      </details>
+    </div>
+    <div id="map-drive" class="hidden">
+      <p class="muted">Each tap moves a short step, then the robot scans. Watch the map grow.</p>
+      <div class="dpad">
+        <span></span><button data-drive="forward" data-amount="0.3">▲</button><span></span>
+        <button data-drive="rotate" data-amount="0.785">⟲</button>
+        <button data-drive="forward" data-amount="0.1">▴</button>
+        <button data-drive="rotate" data-amount="-0.785">⟳</button>
+        <span></span><button data-drive="forward" data-amount="-0.2">▼</button><span></span>
+      </div>
+      <div class="row"><button id="btn-finish-map" class="primary grow">Finish &amp; save map</button></div>
+    </div>
+  </section>
+
+  <section class="panel hidden" id="tab-areas">
+    <div id="draw-idle">
+      <div class="row">
+        <button data-draw="room" class="grow">+ Room</button>
+        <button data-draw="zone" class="grow">+ Zone</button>
+        <button data-draw="nogo" class="grow">+ No-go</button>
+      </div>
+      <p class="muted small">Room: tap the corners. Zone and No-go: drag a rectangle.</p>
+      <div id="area-edit-list" class="area-list"></div>
+    </div>
+    <div id="draw-active" class="hidden">
+      <p id="draw-help" class="muted"></p>
+      <div class="row">
+        <input id="draw-name" placeholder="Name (e.g. Kitchen)" class="grow">
+      </div>
+      <div class="row">
+        <button id="btn-draw-undo" class="grow">Undo point</button>
+        <button id="btn-draw-cancel" class="grow">Cancel</button>
+        <button id="btn-draw-save" class="primary grow">Save</button>
+      </div>
+    </div>
+  </section>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>

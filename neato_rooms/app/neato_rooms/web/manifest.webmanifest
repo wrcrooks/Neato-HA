@@ -1,0 +1,13 @@
+{
+  "name": "Neato Rooms",
+  "short_name": "Neato",
+  "description": "Map your home and clean rooms with a Neato Botvac",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#11161c",
+  "theme_color": "#1d2733",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

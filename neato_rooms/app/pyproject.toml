@@ -1,0 +1,34 @@
+[project]
+name = "neato-rooms"
+version = "0.1.0"
+description = "Local mapping, rooms and zone cleaning for Neato Botvac D3-D7 via OpenNeato"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "websockets>=12",
+    "httpx>=0.27",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+neato-rooms = "neato_rooms.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["neato_rooms*"]
+
+[tool.setuptools.package-data]
+neato_rooms = ["web/*", "web/**/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
