@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import time
@@ -10,13 +11,15 @@ from dataclasses import asdict, dataclass, field
 
 from .calibrate import calibrate
 from .config import Config
-from .geometry import Pose
+from .floorplan import FloorPlan, extract, face_override, layout, same_override, to_pdf, to_svg
+from .geometry import Pose, wrap_angle
 from .nav.coverage import plan_lanes
 from .nav.frontier import choose_goal
 from .navigator import Blocked, Cancelled, Navigator
 from .robot import Robot, RobotError, RobotStatus, make_robot
 from .slam.grid import OccupancyGrid
 from .slam.mapper import Mapper
+from .slam.refine import build_grid, refine
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -56,6 +59,8 @@ class Service:
         self._drive_q: asyncio.Queue[tuple[str, float]] = asyncio.Queue()
         self.map_dirty = False  # unsaved mapping changes
         self.calibration: dict | None = None
+        self._fp_cache: tuple[str, FloorPlan] | None = None
+        self._fp_lock = asyncio.Lock()
 
     # -- Lifecycle -----------------------------------------------------------------
 
@@ -145,6 +150,7 @@ class Service:
             "clean": self._clean,
             "dock": self._go_dock,
             "calibrate": self._calibrate,
+            "refine": self._refine,
         }[kind]
         self.mission = MissionInfo(kind=kind, areas=list(kw.get("area_ids", [])))
         self.nav.cancel_event.clear()
@@ -233,6 +239,7 @@ class Service:
             self.mapper.grid = OccupancyGrid(self.cfg.map_resolution_m, self.cfg.map_size_m)
             self.mapper.set_pose(Pose())
             self.nav.state.visited.clear()
+        self.mapper.keyframes = [] if new_map else self.store.load_scans()
         self.nav.state.obstacles.clear()
         await self._enter_manual()
         self.mapper.mapping = True
@@ -256,15 +263,18 @@ class Service:
             await self.nav.go_to(*goal, tol=0.2)
         await self._set_message("exploration finished, returning to dock")
         self.store.save_grid(self.mapper.grid)
+        self.store.save_scans(self.mapper.keyframes)
         self.map_dirty = False
         await self.broadcast(self.map_message())
         await self._return_and_dock()
+        await self._refine_keyframes(self.mapper.keyframes)
 
     async def _manual_map(self, new_map: bool = True) -> None:
         if new_map:
             self.mapper.grid = OccupancyGrid(self.cfg.map_resolution_m, self.cfg.map_size_m)
             self.mapper.set_pose(Pose())
             self.nav.state.visited.clear()
+        self.mapper.keyframes = [] if new_map else self.store.load_scans()
         await self._enter_manual()
         self.mapper.mapping = True
         self.map_dirty = True
@@ -292,10 +302,12 @@ class Service:
                 continue
             await self.nav._after_move(res)
         self.store.save_grid(self.mapper.grid)
+        self.store.save_scans(self.mapper.keyframes)
         self.map_dirty = False
         await self.broadcast(self.map_message())
-        await self._set_message("map saved")
         await self.robot.set_manual(False)
+        await self._refine_keyframes(self.mapper.keyframes)
+        await self._set_message("map saved")
 
     def drive(self, cmd: str, amount: float = 0.0) -> None:
         if not (self.busy and self.mission and self.mission.kind == "manual_map"):
@@ -359,6 +371,45 @@ class Service:
                 done += 1
         await self._return_and_dock()
 
+    async def _refine(self) -> None:
+        kfs = self.store.load_scans()
+        if len(kfs) < 3:
+            raise Blocked("no scans saved for this map — map the house again to refine it")
+        self.mapper.grid = self.store.load_grid() or self.mapper.grid
+        await self._refine_keyframes(kfs)
+        self.mission.message = "map refined"
+
+    async def _refine_keyframes(self, kfs: list) -> None:
+        """Re-align every scan against the whole map, then rebuild and save the map.
+
+        Runs with the robot idle (docked / out of TestMode): it takes a while on small hardware.
+        """
+        if len(kfs) < 3:
+            return
+        loop = asyncio.get_running_loop()
+
+        def progress(f: float) -> None:
+            self.mission.progress = f
+            asyncio.run_coroutine_threadsafe(self._set_message("refining map", f), loop)
+
+        await self._set_message("refining map", 0.0)
+        new, info = await asyncio.to_thread(refine, self.cfg, kfs, progress=progress)
+        grid = await asyncio.to_thread(build_grid, self.cfg, new)
+        log.info("map refined: %s", info)
+        # Keep the robot where it is relative to the corrected scans.
+        (old_last, _), (new_last, _) = kfs[-1], new[-1]
+        p = self.mapper.pose
+        c, s = math.cos(-old_last.theta), math.sin(-old_last.theta)
+        dx, dy = p.x - old_last.x, p.y - old_last.y
+        rel = Pose(c * dx - s * dy, s * dx + c * dy, wrap_angle(p.theta - old_last.theta))
+        grid.version = self.mapper.grid.version + 1
+        self.mapper.grid = grid
+        self.mapper.keyframes = new
+        self.mapper.set_pose(new_last.compose(rel))
+        self.store.save_grid(grid)
+        self.store.save_scans(new)
+        await self.broadcast(self.map_message())
+
     async def _calibrate(self) -> None:
         await self._enter_manual()
         if self.status.on_dock:
@@ -412,11 +463,69 @@ class Service:
             raise RuntimeError("stop the current mission first")
         self.store.delete_map()
         self.mapper.grid = OccupancyGrid(self.cfg.map_resolution_m, self.cfg.map_size_m)
+        self.mapper.keyframes = []
+        self._fp_cache = None
         self.mapper.set_pose(Pose())
         self.map_dirty = False
 
     def set_pose(self, pose: Pose) -> None:
         self.mapper.set_pose(pose)
+
+    # -- Floor plan -------------------------------------------------------------------
+
+    async def floorplan(self) -> FloorPlan:
+        """The listing-style plan of the saved map (cached until the map or settings change)."""
+        if not self.store.has_map():
+            raise LookupError("no map yet — map the house first")
+        s = self.store.floorplan_settings()
+        rooms = [a for a in self.store.areas if a["kind"] == "room"]
+        key = json.dumps([self.store.meta().get("saved"), s["rotation"], s["overrides"], rooms], sort_keys=True)
+        async with self._fp_lock:
+            if self._fp_cache and self._fp_cache[0] == key:
+                return self._fp_cache[1]
+            grid = self.store.load_grid()
+            plan = await asyncio.to_thread(extract, grid, rooms, s["rotation"], s["overrides"])
+            self._fp_cache = (key, plan)
+            return plan
+
+    async def floorplan_export(self, fmt: str) -> bytes:
+        plan = await self.floorplan()
+        s = self.store.floorplan_settings()
+        page = layout(plan, s["units"], s["title"], s["paper"])
+        if fmt == "svg":
+            return to_svg(page).encode()
+        return await asyncio.to_thread(to_pdf, page, s["title"] or "Floor Plan")
+
+    async def floorplan_align(self, mode: str, face_id: int | None = None, delta_deg: float = 0.0) -> dict:
+        s = self.store.floorplan_settings()
+        if mode == "auto":
+            s["rotation"] = None
+        else:
+            plan = await self.floorplan()
+            if mode == "face":
+                f = self._face(plan, face_id)
+                s["rotation"] = (f.angle + plan.rotation) % (2 * math.pi)
+            elif mode == "rotate":
+                s["rotation"] = (plan.rotation + math.radians(delta_deg)) % (2 * math.pi)
+            else:
+                raise ValueError(f"unknown align mode {mode}")
+        return self.store.save_floorplan_settings(s)
+
+    async def floorplan_toggle(self, face_id: int) -> dict:
+        plan = await self.floorplan()
+        f = self._face(plan, face_id)
+        o = face_override(f, plan.rotation, not f.visible)
+        s = self.store.floorplan_settings()
+        # Replace any earlier override for the same face.
+        s["overrides"] = [x for x in s["overrides"] if "normal" in x and not same_override(x, o)] + [o]
+        return self.store.save_floorplan_settings(s)
+
+    @staticmethod
+    def _face(plan: FloorPlan, face_id: int | None):
+        for f in plan.faces:
+            if f.id == face_id:
+                return f
+        raise KeyError(f"no face {face_id}")
 
     async def native(self, action: str) -> None:
         if self.busy:

@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import time
 import uuid
 from pathlib import Path
 
+import numpy as np
+
+from .geometry import Pose
 from .slam.grid import OccupancyGrid
 
 AREA_KINDS = ("room", "zone", "nogo")
+UNITS = ("imperial", "metric")
+PAPERS = ("auto", "letter", "a4")
+FLOORPLAN_DEFAULTS = {"rotation": None, "units": "imperial", "title": "Floor Plan", "paper": "auto", "overrides": []}
 PALETTE = ["#4e79a7", "#f28e2b", "#59a14f", "#b07aa1", "#edc948", "#76b7b2", "#ff9da7", "#9c755f"]
 
 
@@ -44,8 +51,46 @@ class Store:
         _atomic_write(self.dir / "meta.json", json.dumps(meta).encode())
 
     def delete_map(self) -> None:
-        for name in ("grid.npz", "meta.json"):
+        for name in ("grid.npz", "meta.json", "scans.npz"):
             (self.dir / name).unlink(missing_ok=True)
+        # Alignment and hidden walls belong to the old map; keep units/title/paper.
+        self.save_floorplan_settings({**self.floorplan_settings(), "rotation": None, "overrides": []})
+
+    # -- Scans (keyframes used to refine the map) ------------------------------------
+
+    def save_scans(self, keyframes: list[tuple[Pose, np.ndarray]]) -> None:
+        poses = np.array([[p.x, p.y, p.theta] for p, _ in keyframes], dtype=np.float64).reshape(-1, 3)
+        counts = np.array([len(pts) for _, pts in keyframes], dtype=np.int32)
+        pts = np.concatenate([pts for _, pts in keyframes]) if keyframes else np.zeros((0, 2))
+        buf = io.BytesIO()
+        np.savez_compressed(buf, poses=poses, counts=counts, points=pts.astype(np.float32))
+        _atomic_write(self.dir / "scans.npz", buf.getvalue())
+
+    def load_scans(self) -> list[tuple[Pose, np.ndarray]]:
+        p = self.dir / "scans.npz"
+        if not p.is_file():
+            return []
+        z = np.load(io.BytesIO(p.read_bytes()))
+        chunks = np.split(z["points"], np.cumsum(z["counts"])[:-1]) if len(z["counts"]) else []
+        return [(Pose(*map(float, pose)), pts) for pose, pts in zip(z["poses"], chunks)]
+
+    # -- Floor plan settings ------------------------------------------------------------
+
+    def floorplan_settings(self) -> dict:
+        p = self.dir / "floorplan.json"
+        saved = json.loads(p.read_text()) if p.is_file() else {}
+        return {**FLOORPLAN_DEFAULTS, **saved}
+
+    def save_floorplan_settings(self, settings: dict) -> dict:
+        s = {**FLOORPLAN_DEFAULTS, **{k: v for k, v in settings.items() if k in FLOORPLAN_DEFAULTS}}
+        if s["units"] not in UNITS:
+            raise ValueError(f"units must be one of {UNITS}")
+        if s["paper"] not in PAPERS:
+            raise ValueError(f"paper must be one of {PAPERS}")
+        s["title"] = str(s["title"] or "").strip()[:80]
+        s["rotation"] = None if s["rotation"] is None else float(s["rotation"])
+        _atomic_write(self.dir / "floorplan.json", json.dumps(s, indent=1).encode())
+        return s
 
     def meta(self) -> dict:
         p = self.dir / "meta.json"

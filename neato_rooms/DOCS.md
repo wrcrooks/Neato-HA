@@ -48,6 +48,29 @@ If your floor has stairs or drop-offs:
 
 The robot's own **Whole house** and **Spot** cleaning are still under *Robot's own cleaning*.
 
+## Floor plan
+
+The **Plan** tab turns the map into a listing-style floor plan: walls drawn to their measured
+thickness, doors with swings, each room's name and size (from the rooms you drew), and the
+approximate interior area.
+
+* **Rotation.** The plan (and the map view) is turned so the walls run straight across the
+  screen. **⟲ 90° / ⟳ 90°** turns it a quarter turn. With **Tap a wall to → align to it**, tap
+  any wall to make that wall horizontal. **Auto** goes back to the automatic choice.
+* **Furniture.** Beds, sofas and cabinets against a wall are spotted and hidden. They show as
+  dashed lines. With **Tap a wall to → hide / show it**, tap a dashed line to turn it into a wall,
+  or tap a wall to hide it. Free-standing pieces such as a kitchen island are drawn as an
+  outline.
+* **Export.** Pick feet & inches or metres and Letter or A4 paper, give it a title, and press
+  **Export SVG** or **Export PDF**. The plan is printed at the largest standard scale that fits
+  (1:50, 1:100, …), with a scale bar.
+
+Walls the robot never saw (behind a bed, say) are filled in by extending the walls it did see.
+Measurements are only as good as the map: a map that's blurred or doubled gives a worse plan.
+After mapping, the add-on re-aligns every scan against the whole map ("refining map"). This takes
+a minute or more on small hardware. You can run it again from **Plan → Sharpen the map** after
+extending a map.
+
 ## How it works
 
 The robot is driven in short stop-and-scan steps: move ≤ 35 cm, stop, read a LIDAR scan, and

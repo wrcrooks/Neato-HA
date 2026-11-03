@@ -12,11 +12,12 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .config import Config
+from .floorplan import fmt_area, fmt_len
 from .geometry import Pose
 from .robot import RobotError
 from .service import Service
@@ -49,6 +50,22 @@ class MissionIn(BaseModel):
 class DriveIn(BaseModel):
     cmd: str  # forward | rotate | finish
     amount: float = 0.0  # metres or radians (CCW positive)
+
+
+class FloorplanSettingsIn(BaseModel):
+    units: str | None = None
+    title: str | None = None
+    paper: str | None = None
+
+
+class AlignIn(BaseModel):
+    mode: str  # auto | face | rotate
+    face_id: int | None = None
+    delta_deg: float = 0.0
+
+
+class ToggleIn(BaseModel):
+    face_id: int
 
 
 class PoseIn(BaseModel):
@@ -127,7 +144,7 @@ def create_app(cfg: Config, service: Service | None = None) -> FastAPI:
             kw = {"area_ids": m.area_ids, "passes": max(1, min(m.passes, 3))}
         elif m.kind in ("explore", "manual_map"):
             kw = {"new_map": m.new_map}
-        elif m.kind not in ("dock", "calibrate"):
+        elif m.kind not in ("dock", "calibrate", "refine"):
             bad(f"unknown mission {m.kind}")
         try:
             svc.status = await svc.robot.status()
@@ -162,6 +179,78 @@ def create_app(cfg: Config, service: Service | None = None) -> FastAPI:
             bad(e, 409)
         await svc.broadcast(svc.map_message())
         return {"ok": True}
+
+    # -- Floor plan -------------------------------------------------------------------
+
+    async def plan_or_404():
+        try:
+            return await svc.floorplan()
+        except LookupError as e:
+            bad(e, 404)
+
+    async def floorplan_changed():
+        plan = await plan_or_404()
+        await svc.broadcast({"type": "floorplan", "rotation": plan.rotation})
+
+    @app.get("/api/floorplan")
+    async def get_floorplan():
+        plan = await plan_or_404()
+        settings = svc.store.floorplan_settings()
+        out = plan.as_dict()
+        units = settings["units"]
+        for r in out["rooms"]:
+            r["dims"] = f"{fmt_len(r['width_m'], units)} x {fmt_len(r['depth_m'], units)}" if r["width_m"] and r["depth_m"] else ""
+        return {**out, "settings": settings, "area_text": fmt_area(plan.interior_area_m2, units)}
+
+    @app.get("/api/floorplan/settings")
+    async def get_floorplan_settings():
+        return svc.store.floorplan_settings()
+
+    @app.put("/api/floorplan/settings")
+    async def put_floorplan_settings(p: FloorplanSettingsIn):
+        patch = {k: v for k, v in p.model_dump().items() if v is not None}
+        try:
+            return svc.store.save_floorplan_settings({**svc.store.floorplan_settings(), **patch})
+        except ValueError as e:
+            bad(e)
+
+    @app.post("/api/floorplan/align")
+    async def align_floorplan(a: AlignIn):
+        try:
+            s = await svc.floorplan_align(a.mode, a.face_id, a.delta_deg)
+        except LookupError as e:  # KeyError (no such face) is a LookupError too
+            bad(e, 404)
+        except ValueError as e:
+            bad(e)
+        await floorplan_changed()
+        return s
+
+    @app.post("/api/floorplan/toggle")
+    async def toggle_face(t: ToggleIn):
+        try:
+            s = await svc.floorplan_toggle(t.face_id)
+        except LookupError as e:
+            bad(e, 404)
+        await floorplan_changed()
+        return s
+
+    async def export(fmt: str, download: bool):
+        await plan_or_404()
+        data = await svc.floorplan_export(fmt)
+        name = (svc.store.floorplan_settings()["title"] or "floorplan").strip().replace(" ", "_")
+        name = "".join(c for c in name if c.isalnum() or c in "_-") or "floorplan"
+        headers = {"Cache-Control": "no-cache"}
+        if download:
+            headers["Content-Disposition"] = f'attachment; filename="{name}.{fmt}"'
+        return Response(data, media_type="image/svg+xml" if fmt == "svg" else "application/pdf", headers=headers)
+
+    @app.get("/api/floorplan.svg")
+    async def floorplan_svg(download: bool = False):
+        return await export("svg", download)
+
+    @app.get("/api/floorplan.pdf")
+    async def floorplan_pdf(download: bool = False):
+        return await export("pdf", download)
 
     @app.post("/api/pose")
     async def set_pose(p: PoseIn):

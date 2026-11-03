@@ -11,6 +11,9 @@
   --map-free: #ffffff;
   --map-occ: #2b3440;
   --map-unknown: #cfd4da;
+  --plan-bg: #ffffff;
+  --plan-wall: #2b2b2b;
+  --plan-line: #6b6b6b;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -26,6 +29,9 @@
     --map-free: #2a333e;
     --map-occ: #d7dde4;
     --map-unknown: #161c23;
+    --plan-bg: #1b222b;
+    --plan-wall: #e6eaef;
+    --plan-line: #9aa5b1;
   }
 }
 * { box-sizing: border-box; }
@@ -98,3 +104,24 @@ summary { color: var(--muted); cursor: pointer; }
 .dpad button { font-size: 22px; padding: 0; }
 
 .toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; z-index: 10; max-width: 90vw; }
+
+a.button {
+  display: inline-block; text-align: center; text-decoration: none; font: inherit; color: var(--text);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px;
+}
+a.button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.seg { display: flex; }
+.seg button { border-radius: 0; }
+.seg button:first-child { border-radius: 8px 0 0 8px; }
+.seg button:last-child { border-radius: 0 8px 8px 0; border-left: 0; }
+.seg button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+svg.plan { position: absolute; inset: 0; width: 100%; height: 100%; background: var(--plan-bg); }
+.plan .wall { fill: var(--plan-wall); stroke: var(--plan-wall); stroke-width: 0.01; cursor: pointer; }
+.plan .wall:hover, .plan .ghost:hover { fill: var(--accent); stroke: var(--accent); }
+.plan .ghost { fill: none; stroke: var(--plan-line); stroke-width: 0.03; stroke-dasharray: 0.08 0.06; cursor: pointer; opacity: .6; }
+.plan .hit { stroke: transparent; stroke-width: 0.3; fill: none; cursor: pointer; }
+.plan .fixture { fill: none; stroke: var(--plan-line); stroke-width: 0.02; }
+.plan .door { fill: none; stroke: var(--plan-line); stroke-width: 0.015; }
+.plan text { fill: var(--plan-wall); font-family: system-ui, sans-serif; text-anchor: middle; }
+.plan text.dim { fill: var(--plan-line); }

@@ -51,7 +51,14 @@ Why this split:
 3. **Clean** — pick one or more rooms/zones → the server undocks, relocalises against the saved
    map, A*-navigates to each area, runs a boustrophedon (lawn-mower) coverage path with brush +
    vacuum on, then returns to the dock pose and hands over to the robot's native docking.
-4. **Native fallbacks** — "Clean house", "Spot", "Dock" buttons pass straight through to the
+4. **Floor plan** — after mapping, every keyframe scan is re-registered against the complete
+   map (global refinement) and the map is rebuilt. Walls are then extracted as faces with
+   sub-cell accuracy and aligned to the dominant wall direction (45° walls included). Each face
+   is classified as wall, exterior wall, furniture (hidden) or fixture (island). Unseen corners
+   are closed, doors are found as seen-through gaps between walls, and room sizes are measured
+   wall to wall. The plan exports to SVG/PDF at a standard scale. Alignment and hidden faces
+   are stored in the map frame.
+5. **Native fallbacks** — "Clean house", "Spot", "Dock" buttons pass straight through to the
    robot's own firmware.
 
 ## 4. Repo layout
@@ -69,6 +76,7 @@ See README.md. In short: `neato_rooms/` is the Home Assistant add-on, and the Py
 | 3 | PWA: live map, D-pad, room/zone/no-go editor | ✅ done |
 | 4 | Planner, coverage, clean missions, return-to-dock | ✅ done in sim (~96% room coverage) |
 | 5 | HA add-on packaging | ✅ image builds and runs |
+| 5b | Map refinement + listing-style floor plan, SVG/PDF export | ✅ done in sim |
 | 6 | **On-robot calibration & tuning** (see §6) | together, once hardware is wired |
 | 7 | Later: schedules per room, HA entities/services, use robot's own `GetRobotPos` pose during native cleans | later |
 

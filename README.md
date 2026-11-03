@@ -6,6 +6,9 @@ it. This project brings those back for Botvac **D3–D7**, fully local:
 * **Map** the house (auto-explore, or drive it yourself)
 * **Label rooms**, draw cleaning **zones** and **no-go** areas
 * **Clean selected rooms/zones**, then return to the dock
+* A **floor plan** in the style of a real-estate listing: wall thicknesses, doors with swings,
+  room dimensions and total area, aligned to the walls, exported as **SVG or PDF** at a standard
+  scale
 * A **PWA** UI, served as a **Home Assistant add-on** (sidebar panel)
 
 ```
@@ -21,6 +24,8 @@ planning, coverage and the UI. See [PLAN.md](PLAN.md) for the design and roadmap
 
 * Works end-to-end against the built-in **simulator**: exploring maps all rooms, a selected
   room gets ~96% coverage, and the robot docks again.
+* Floor plans from simulated maps get room sizes within a few cm, doors within ~5 cm and
+  total area within ~1%, at any dock angle.
 * **Not yet run on a real D7.** Hardware-dependent values (wheel base, LIDAR mounting/direction,
   docking hand-off) are configurable, and there is a calibration routine for them. See PLAN.md §6.
 

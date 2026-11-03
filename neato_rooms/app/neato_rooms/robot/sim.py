@@ -19,24 +19,40 @@ def _rect(x0, y0, x1, y1):
     return [(x0, y0, x1, y0), (x1, y0, x1, y1), (x1, y1, x0, y1), (x0, y1, x0, y0)]
 
 
+def _loop(pts):
+    return [(*pts[i], *pts[(i + 1) % len(pts)]) for i in range(len(pts))]
+
+
+INTERIOR_WALL_M = 0.12
+EXTERIOR_WALL_M = 0.20
+
+
 def default_house() -> tuple[np.ndarray, Pose]:
     """~9 x 6 m flat: living room, kitchen, bedroom, hallway; returns (segments, dock pose).
 
-    Layout (world frame, metres):
+    Walls have real thickness (interior 12 cm, centred on the lines below; exterior 20 cm,
+    outside the 0..9 x 0..6 interior), and the living room has a 45-degree corner.
+
+    Layout (world frame, metres; interior faces):
         y=6 +-----------------+---------+
             |  bedroom        | kitchen |
         y=3.4+---- ---+ hall  +--- -----+
-            |  living room            |
-        y=0 +-------------------------+
+            |  living room             \\
+        y=0 +-----------------------+---+  (corner cut 8.4,0 -> 9,0.6)
             x=0                      x=9
     """
     s: list[tuple] = []
-    s += _rect(0, 0, 9, 6)  # outer walls
-    # Horizontal wall at y=3.4 with doorways at x 2.4-3.2 (bedroom) and 6.6-7.4 (kitchen);
-    # hallway opening x 4.4-5.4 has no wall.
-    s += [(0, 3.4, 2.4, 3.4), (3.2, 3.4, 4.4, 3.4), (5.4, 3.4, 6.6, 3.4), (7.4, 3.4, 9, 3.4)]
-    # Hallway walls separating bedroom (x<4.4) and kitchen (x>5.4) up to y=6, kitchen door handled above.
-    s += [(4.4, 3.4, 4.4, 6.0), (5.4, 3.4, 5.4, 6.0)]
+    inner = [(0, 0), (8.4, 0), (9, 0.6), (9, 6), (0, 6)]
+    e = EXTERIOR_WALL_M
+    outer = [(-e, -e), (8.4 + e * 0.414, -e), (9 + e, 0.6 - e * 0.414), (9 + e, 6 + e), (-e, 6 + e)]
+    s += _loop(inner) + _loop(outer)
+    h = INTERIOR_WALL_M / 2
+    # Wall at y=3.4 with doorways x 2.4-3.2 (bedroom) and 6.6-7.4 (kitchen); the hallway
+    # opening x 4.4-5.4 has no wall. Pieces next to the hallway walls overlap them.
+    for x0, x1 in [(0, 2.4), (3.2, 4.4 + h), (5.4 - h, 6.6), (7.4, 9)]:
+        s += _rect(x0, 3.4 - h, x1, 3.4 + h)
+    # Hallway walls separating the bedroom (x<4.4) and kitchen (x>5.4).
+    s += _rect(4.4 - h, 3.4 - h, 4.4 + h, 6.0) + _rect(5.4 - h, 3.4 - h, 5.4 + h, 6.0)
     # Furniture: sofa, kitchen island, bed (as boxes), table leg-ish posts.
     s += _rect(0.0, 2.2, 2.0, 3.0)  # sofa against the dividing wall
     s += _rect(6.8, 4.4, 7.8, 5.0)  # kitchen island

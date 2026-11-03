@@ -40,6 +40,9 @@ class Mapper:
         self.last_points = np.zeros((0, 2))
         self.last_score = 0.0
         self.lost_count = 0
+        # Every scan integrated into the map, with its pose: lets the whole map be
+        # re-optimised afterwards (see slam/refine.py).
+        self.keyframes: list[tuple[Pose, np.ndarray]] = []
 
     @property
     def sensor_robot(self) -> tuple[float, float]:
@@ -93,6 +96,7 @@ class Mapper:
         if self.mapping and len(pts) and (used or not self._map_ready()):
             # Only extend the map when the pose is trusted (or the map is still being seeded).
             self.grid.integrate(self.pose, pts, self.sensor_robot)
+            self.keyframes.append((self.pose, pts.astype(np.float32)))
         self.trajectory.append(self.pose)
         self.last_points = pts
         self.last_score = score

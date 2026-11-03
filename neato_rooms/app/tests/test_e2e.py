@@ -39,6 +39,7 @@ async def test_explore_then_clean_kitchen(tmp_path):
     m = await wait(svc)
     print("explore:", m.status, m.message, f"{time.time() - t0:.1f}s, scans={len(svc.mapper.trajectory)}")
     assert m.status == "done", m.message
+    assert len(svc.store.load_scans()) > 10  # kept for refinement
     assert svc.store.has_map()
     assert robot.pose.distance_to(robot.dock.x, robot.dock.y) < 0.01  # docked
 

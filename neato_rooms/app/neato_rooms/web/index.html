@@ -28,6 +28,7 @@
 
   <main>
     <canvas id="map"></canvas>
+    <svg id="plan" class="plan hidden" xmlns="http://www.w3.org/2000/svg"></svg>
     <div id="map-empty" class="map-empty hidden">No map yet. Open <b>Map</b> below to create one.</div>
     <div id="hint" class="hint hidden"></div>
     <div class="map-tools">
@@ -40,6 +41,7 @@
     <button role="tab" data-tab="clean" class="active">Clean</button>
     <button role="tab" data-tab="mapping">Map</button>
     <button role="tab" data-tab="areas">Rooms</button>
+    <button role="tab" data-tab="plan">Plan</button>
   </nav>
 
   <section class="panel" id="tab-clean">
@@ -119,6 +121,41 @@
         <button id="btn-draw-save" class="primary grow">Save</button>
       </div>
     </div>
+  </section>
+
+  <section class="panel hidden" id="tab-plan">
+    <p id="plan-summary" class="muted">No map yet.</p>
+    <div class="row">
+      <span class="muted small">Rotate</span>
+      <button id="plan-rot-auto" class="small">Auto</button>
+      <button data-plan-rot="90" class="small" aria-label="Rotate left 90 degrees">⟲ 90°</button>
+      <button data-plan-rot="-90" class="small" aria-label="Rotate right 90 degrees">⟳ 90°</button>
+    </div>
+    <div class="row">
+      <span class="muted small">Tap a wall to</span>
+      <div class="seg">
+        <button data-plan-tap="align" class="small active">align to it</button>
+        <button data-plan-tap="toggle" class="small">hide / show it</button>
+      </div>
+    </div>
+    <div class="row">
+      <input id="plan-title" class="grow" placeholder="Title (e.g. 12 Oak Street)" maxlength="80">
+    </div>
+    <div class="row">
+      <select id="plan-units"><option value="imperial">Feet &amp; inches</option><option value="metric">Metres</option></select>
+      <select id="plan-paper"><option value="auto">Auto paper</option><option value="letter">Letter</option><option value="a4">A4</option></select>
+    </div>
+    <div class="row">
+      <a id="plan-svg" class="button grow" href="api/floorplan.svg?download=1" download>Export SVG</a>
+      <a id="plan-pdf" class="button primary grow" href="api/floorplan.pdf?download=1" download>Export PDF</a>
+    </div>
+    <details>
+      <summary>Sharpen the map</summary>
+      <p class="muted small">Re-aligns every saved LIDAR scan against the whole map, which tightens walls seen from
+        several rooms. Mapping does this automatically; run it again after extending a map.
+        It can take a few minutes.</p>
+      <div class="row"><button id="btn-refine" class="grow">Refine map</button></div>
+    </details>
   </section>
 
   <div id="toast" class="toast hidden"></div>

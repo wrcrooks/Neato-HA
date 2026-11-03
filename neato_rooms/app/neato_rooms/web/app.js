@@ -14,13 +14,15 @@ const S = {
   tab: "clean",
   draw: null, // {kind, pts: [[x,y]], rect: bool}
   poseMode: null, // null | {start:[x,y], theta}
-  view: { cx: 0, cy: 0, scale: 60 }, // px per metre
+  view: { cx: 0, cy: 0, scale: 60, rot: 0 }, // px per metre; rot = plan alignment (map shown rotated by -rot)
+  plan: null, // /api/floorplan
+  planTap: "align",
   fitted: false,
   connected: false,
 };
 
 const KIND_LABEL = { room: "Room", zone: "Zone", nogo: "No-go" };
-const MISSION_LABEL = { explore: "Exploring", manual_map: "Mapping", clean: "Cleaning", dock: "Docking", calibrate: "Calibrating" };
+const MISSION_LABEL = { explore: "Exploring", manual_map: "Mapping", clean: "Cleaning", dock: "Docking", calibrate: "Calibrating", refine: "Refining map" };
 
 // ---------------------------------------------------------------------------
 // API
@@ -72,6 +74,7 @@ function connect() {
     else if (msg.type === "map") setMap(msg);
     else if (msg.type === "areas") { S.areas = msg.areas; pruneSelection(); renderAreas(); }
     else if (msg.type === "live") { S.live = msg; requestDraw(); }
+    else if (msg.type === "floorplan") loadPlan();
   };
 }
 
@@ -88,6 +91,9 @@ function hexToRgb(hex) {
 
 function setMap(msg) {
   $("#map-empty").classList.toggle("hidden", !msg.empty);
+  // Mapping streams the map every couple of seconds; the plan is rebuilt once it settles.
+  const m = S.status && S.status.mission;
+  if (!(m && m.status === "running")) loadPlan();
   if (msg.empty) { S.map = null; S.mapCanvas = null; requestDraw(); return; }
   const raw = atob(msg.data);
   const { width: w, height: h } = msg;
@@ -131,12 +137,17 @@ function resize() {
 
 function toScreen(x, y) {
   const r = canvas.getBoundingClientRect();
-  return [(x - S.view.cx) * S.view.scale + r.width / 2, r.height / 2 - (y - S.view.cy) * S.view.scale];
+  const c = Math.cos(S.view.rot), s = Math.sin(S.view.rot);
+  const dx = x - S.view.cx, dy = y - S.view.cy;
+  const qx = c * dx + s * dy, qy = -s * dx + c * dy;
+  return [qx * S.view.scale + r.width / 2, r.height / 2 - qy * S.view.scale];
 }
 
 function toWorld(sx, sy) {
   const r = canvas.getBoundingClientRect();
-  return [(sx - r.width / 2) / S.view.scale + S.view.cx, (r.height / 2 - sy) / S.view.scale + S.view.cy];
+  const qx = (sx - r.width / 2) / S.view.scale, qy = (r.height / 2 - sy) / S.view.scale;
+  const c = Math.cos(S.view.rot), s = Math.sin(S.view.rot);
+  return [c * qx - s * qy + S.view.cx, s * qx + c * qy + S.view.cy];
 }
 
 function fit() {
@@ -145,7 +156,9 @@ function fit() {
   const wm = S.map.width * S.map.resolution, hm = S.map.height * S.map.resolution;
   S.view.cx = S.map.origin[0] + wm / 2;
   S.view.cy = S.map.origin[1] + hm / 2;
-  S.view.scale = Math.max(5, Math.min(r.width / (wm + 0.5), r.height / (hm + 0.5)));
+  const c = Math.abs(Math.cos(S.view.rot)), s = Math.abs(Math.sin(S.view.rot));
+  const w = c * wm + s * hm, h = s * wm + c * hm; // extent of the rotated map
+  S.view.scale = Math.max(5, Math.min(r.width / (w + 0.5), r.height / (h + 0.5)));
   requestDraw();
 }
 
@@ -193,7 +206,11 @@ function draw() {
     const m = S.map;
     const [sx, sy] = toScreen(m.origin[0], m.origin[1] + m.height * m.resolution);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(S.mapCanvas, sx, sy, m.width * m.resolution * S.view.scale, m.height * m.resolution * S.view.scale);
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(S.view.rot);
+    ctx.drawImage(S.mapCanvas, 0, 0, m.width * m.resolution * S.view.scale, m.height * m.resolution * S.view.scale);
+    ctx.restore();
   }
 
   // Areas
@@ -284,7 +301,8 @@ function draw() {
   ctx.stroke();
   ctx.beginPath();
   ctx.moveTo(rx, ry);
-  ctx.lineTo(rx + Math.cos(pose.theta) * Math.max(rr, 8), ry - Math.sin(pose.theta) * Math.max(rr, 8));
+  const th = pose.theta - S.view.rot;
+  ctx.lineTo(rx + Math.cos(th) * Math.max(rr, 8), ry - Math.sin(th) * Math.max(rr, 8));
   ctx.stroke();
 }
 
@@ -409,7 +427,9 @@ function renderStatus() {
   const manualMapping = running && m.kind === "manual_map";
   $("#map-idle").classList.toggle("hidden", !!manualMapping);
   $("#map-drive").classList.toggle("hidden", !manualMapping);
-  $$("#map-idle button, #btn-clean, #btn-dock, [data-native]").forEach((b) => {
+  if (S.wasRunning && !running) loadPlan();
+  S.wasRunning = !!running;
+  $$("#map-idle button, #btn-clean, #btn-dock, [data-native], #btn-refine").forEach((b) => {
     if (b.id === "btn-clean") b.disabled = running || S.selected.size === 0;
     else b.disabled = !!running;
   });
@@ -536,6 +556,9 @@ $$(".tabs button").forEach((b) => b.addEventListener("click", () => {
   $$(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
   $$(".panel").forEach((p) => p.classList.toggle("hidden", p.id !== `tab-${S.tab}`));
   if (S.tab !== "areas" && S.draw) endDraw();
+  $("#plan").classList.toggle("hidden", S.tab !== "plan");
+  $$(".map-tools").forEach((t) => t.classList.toggle("hidden", S.tab === "plan"));
+  if (S.tab === "plan") loadPlan();
 }));
 
 $("#btn-clean").addEventListener("click", () => act(() => api("api/mission", {
@@ -574,6 +597,114 @@ async function finishPose() {
 
 $("#btn-center").addEventListener("click", () => { S.view.cx = S.live.pose.x; S.view.cy = S.live.pose.y; requestDraw(); });
 $("#btn-fit").addEventListener("click", fit);
+
+// ---------------------------------------------------------------------------
+// Floor plan
+
+const SVGNS = "http://www.w3.org/2000/svg";
+let planLoading = null;
+
+async function loadPlan() {
+  if (planLoading) return planLoading;
+  planLoading = (async () => {
+    try {
+      S.plan = await api("api/floorplan");
+    } catch (e) {
+      S.plan = null;
+    }
+    planLoading = null;
+    const rot = S.plan ? S.plan.rotation : 0;
+    if (Math.abs(rot - S.view.rot) > 1e-6) { S.view.rot = rot; fit(); }
+    renderPlan();
+  })();
+  return planLoading;
+}
+
+function svgEl(parent, tag, attrs, text) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  if (text !== undefined) el.textContent = text;
+  parent.appendChild(el);
+  return el;
+}
+
+function renderPlan() {
+  const svg = $("#plan");
+  svg.replaceChildren();
+  const p = S.plan;
+  const settings = p ? p.settings : null;
+  $("#plan-summary").textContent = p
+    ? `Approx. interior area ${p.area_text} · ${p.faces.filter((f) => f.visible && f.kind !== "fixture").length} walls, ${p.doors.length} doors`
+    : "No map yet — map the house first.";
+  $$("#plan-svg, #plan-pdf").forEach((a) => a.classList.toggle("hidden", !p));
+  if (!p) return;
+  if (document.activeElement !== $("#plan-title")) $("#plan-title").value = settings.title;
+  $("#plan-units").value = settings.units;
+  $("#plan-paper").value = settings.paper;
+
+  // Plan coordinates are metres, y up; the SVG flips y so text is placed at (x, -y).
+  const [x0, y0, x1, y1] = p.bounds;
+  const pad = 0.6;
+  svg.setAttribute("viewBox", `${x0 - pad} ${-y1 - pad} ${x1 - x0 + 2 * pad} ${y1 - y0 + 2 * pad}`);
+  const pts = (list) => list.map(([x, y]) => `${x},${-y}`).join(" ");
+  const g = svgEl(svg, "g", {});
+  for (const f of p.faces) {
+    if (f.visible && f.kind === "fixture") svgEl(g, "polygon", { points: pts(f.body), class: "fixture" });
+  }
+  for (const d of p.doors) {
+    const dx = Math.cos(d.angle), dy = Math.sin(d.angle);
+    const nx = -dy * d.side, ny = dx * d.side;
+    const hx = d.x - dx * d.width / 2, hy = d.y - dy * d.width / 2;
+    const leaf = [hx + nx * d.width, hy + ny * d.width], end = [hx + dx * d.width, hy + dy * d.width];
+    svgEl(g, "path", {
+      class: "door",
+      d: `M${hx},${-hy} L${leaf[0]},${-leaf[1]} A${d.width},${d.width} 0 0 ${d.side > 0 ? 0 : 1} ${end[0]},${-end[1]}`,
+    });
+  }
+  for (const f of p.faces) {
+    if (f.kind === "fixture" && f.visible) continue;
+    if (f.visible && f.kind !== "furniture") {
+      svgEl(g, "polygon", { points: pts(f.body), class: "wall", "data-id": f.id });
+    } else if (!f.visible) {
+      svgEl(g, "line", { x1: f.a[0], y1: -f.a[1], x2: f.b[0], y2: -f.b[1], class: "ghost", "data-id": f.id });
+    }
+    svgEl(g, "line", { x1: f.a[0], y1: -f.a[1], x2: f.b[0], y2: -f.b[1], class: "hit", "data-id": f.id });
+  }
+  for (const r of p.rooms) {
+    svgEl(g, "text", { x: r.x, y: -r.y - 0.04, "font-size": 0.22, "font-weight": 600 }, r.name.toUpperCase());
+    if (r.dims) svgEl(g, "text", { x: r.x, y: -r.y + 0.22, "font-size": 0.18, class: "dim" }, r.dims);
+  }
+}
+
+$("#plan").addEventListener("click", (e) => {
+  const id = e.target.getAttribute && e.target.getAttribute("data-id");
+  if (id === null || id === undefined) return;
+  const face_id = Number(id);
+  if (S.planTap === "align") {
+    act(() => api("api/floorplan/align", { body: { mode: "face", face_id } })).then(loadPlan);
+  } else {
+    act(() => api("api/floorplan/toggle", { body: { face_id } })).then(loadPlan);
+  }
+});
+$$("[data-plan-tap]").forEach((b) => b.addEventListener("click", () => {
+  S.planTap = b.dataset.planTap;
+  $$("[data-plan-tap]").forEach((x) => x.classList.toggle("active", x === b));
+}));
+$("#plan-rot-auto").addEventListener("click", () => act(() => api("api/floorplan/align", { body: { mode: "auto" } })).then(loadPlan));
+$$("[data-plan-rot]").forEach((b) => b.addEventListener("click", () => act(() => api("api/floorplan/align", {
+  body: { mode: "rotate", delta_deg: Number(b.dataset.planRot) },
+})).then(loadPlan)));
+async function savePlanSettings() {
+  await act(() => api("api/floorplan/settings", {
+    method: "PUT",
+    body: { title: $("#plan-title").value, units: $("#plan-units").value, paper: $("#plan-paper").value },
+  }));
+  loadPlan();
+}
+$("#plan-title").addEventListener("change", savePlanSettings);
+$("#plan-units").addEventListener("change", savePlanSettings);
+$("#plan-paper").addEventListener("change", savePlanSettings);
+$("#btn-refine").addEventListener("click", () => act(() => api("api/mission", { body: { kind: "refine" } })));
 
 // ---------------------------------------------------------------------------
 
