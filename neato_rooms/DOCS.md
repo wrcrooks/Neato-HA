@@ -55,6 +55,70 @@ the robot labels the pins **RX, 3.3V, TX, GND**. Cross the data lines:
 See OpenNeato's [user guide](https://github.com/renjfk/OpenNeato/blob/main/docs/user-guide.md)
 for photos and the flashing tool.
 
+### Installing it inside the robot
+
+This is condensed from the
+[fang gen3 install guide](https://github.com/vacuula/fang/blob/main/install-esp-device-gen3.md),
+which covers D3–D7. Its photos are of a D3. The D7 is built on the same platform, but check
+the screws and clips against your own robot.
+
+**Before you start**
+
+* **Tools:** a long T10 Torx bit (about 150 mm, tamper-proof, because some robots use security
+  Torx), a Phillips #1, a plastic pry tool, Kapton or masking tape, and electrical tape.
+* **Flash OpenNeato over USB, and test the wiring with the robot assembled, before you install
+  the ESP32.** Once it's inside, USB is out of reach.
+* Never plug in or unplug the debug cable while the battery is connected.
+
+**Steps**
+
+1. Cover your work surface, because dust comes out. Remove the dustbin, then turn the robot
+   upside down.
+2. Pull the brush guard straight up and lift out the main brush. Remove the side brush too, if
+   there is one.
+3. **Remove the front bumper.** It isn't screwed on: hooks at each end hold it on. Pull one
+   end of the bumper outwards, away from the body, then forwards towards you until that end
+   unhooks. Do the same at the other end, then lift the bumper off. Don't pull from the middle.
+4. **Take out the battery.** Undo the 2 Phillips screws on the battery cover, lift the cover
+   off, and unplug the battery. Press the connector's release tab rather than pulling on the
+   wires.
+   [Photo: screws to remove](https://github.com/vacuula/fang/raw/main/pics/installs/jay/1-removing-screws.jpg)
+5. Remove the **6 T10 screws** from the underside. They come out completely, so keep them safe.
+6. Turn the robot upright and remove the **2 T10 screws** inside the dustbin bay.
+   [Photo](https://github.com/vacuula/fang/raw/main/pics/installs/jay/1a-removing-two-more-screws.jpg)
+7. Press the two tabs and lift off the top cover. The fang guide puts the tabs at the front,
+   while iFixit's
+   [Botvac D75 guide](https://www.ifixit.com/Guide/Neato+Botvac+D75+Motherboard+Replacement/79197)
+   puts them at the back, so check both. Make sure no LEDs are lit.
+8. Plug the JST XH cable **fully** into the debug port at the front-left of the mainboard.
+   A half-seated plug is a common fault.
+   [Photos: not seated](https://github.com/vacuula/fang/raw/main/pics/installs/7_not-connected.jpg) ·
+   [seated](https://github.com/vacuula/fang/raw/main/pics/installs/7_connected.jpg) ·
+   [how far to push](https://github.com/vacuula/fang/raw/main/pics/installs/7_how-far-to-push.jpg) ·
+   [cable installed](https://github.com/vacuula/fang/raw/main/pics/installs/jay/2-install-JST-XH.jpg)
+9. Run the cable tightly across the board, under the existing wires, to the right-hand side.
+   Put the ESP32 to the right of, or under, the mainboard, and connect the four wires as in the
+   table above.
+   [Photos: OpenNeato install](https://github.com/renjfk/OpenNeato/raw/main/docs/wiring-wide-angle.jpeg) ·
+   [close-up](https://github.com/renjfk/OpenNeato/raw/main/docs/wiring-closeup.jpeg)
+10. Wrap the ESP32 in Kapton or masking tape so it can't short against anything. Tape or
+    hot-glue the joints, because the robot vibrates, then tape the cable to the chassis.
+    [Photo](https://github.com/vacuula/fang/raw/main/pics/installs/jay/4-installed-and-taped.jpg)
+11. Refit the top cover, checking that no wires are pinched. Refit the 2 dustbin-bay screws and
+    the 6 bottom screws.
+12. Reconnect the battery, then refit the battery cover, bumper, brush and dustbin.
+13. Power on. The ESP32 should join your Wi-Fi, or start its own `neato-ap` access point. Check
+    that `http://neato.local` shows the robot's state, then do a short **Manual** drive.
+
+**Shortcut: keep the top shell on.** A small board such as the C3 Super Mini can go
+**behind the bumper** instead. Do steps 1–4, plug the cable into the debug port from the front,
+tape the ESP32 into the space behind the bumper, and reassemble. Some robots need a bumper
+strut trimmed, or a small piece of plastic broken away under the port. See the fang guide's
+"behind bumper" section.
+[Photo](https://github.com/vacuula/fang/raw/main/pics/installs/behind-bumper-c3.png)
+
+Whichever way you install it, keep wires clear of the LIDAR turret and the bumper's travel.
+
 ## ⚠️ Safety: stairs
 
 Room cleaning drives the robot in OpenNeato's *manual mode* (the robot's TestMode). OpenNeato
