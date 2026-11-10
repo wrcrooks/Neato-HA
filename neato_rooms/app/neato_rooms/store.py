@@ -51,28 +51,63 @@ class Store:
         _atomic_write(self.dir / "meta.json", json.dumps(meta).encode())
 
     def delete_map(self) -> None:
-        for name in ("grid.npz", "meta.json", "scans.npz"):
+        for name in ("grid.npz", "meta.json", "scans.npz", "sessions.json"):
             (self.dir / name).unlink(missing_ok=True)
         # Alignment and hidden walls belong to the old map; keep units/title/paper.
         self.save_floorplan_settings({**self.floorplan_settings(), "rotation": None, "overrides": []})
 
-    # -- Scans (keyframes used to refine the map) ------------------------------------
+    # -- Scans (keyframes used to refine the map), tagged with their mapping session ------
 
-    def save_scans(self, keyframes: list[tuple[Pose, np.ndarray]]) -> None:
+    def save_scans(self, keyframes: list[tuple[Pose, np.ndarray]], session_ids=None) -> None:
         poses = np.array([[p.x, p.y, p.theta] for p, _ in keyframes], dtype=np.float64).reshape(-1, 3)
         counts = np.array([len(pts) for _, pts in keyframes], dtype=np.int32)
         pts = np.concatenate([pts for _, pts in keyframes]) if keyframes else np.zeros((0, 2))
+        ids = np.zeros(len(keyframes), dtype=np.int32) if session_ids is None else np.asarray(session_ids, dtype=np.int32)
+        if len(ids) != len(keyframes):
+            raise ValueError("one session id per scan")
         buf = io.BytesIO()
-        np.savez_compressed(buf, poses=poses, counts=counts, points=pts.astype(np.float32))
+        np.savez_compressed(buf, poses=poses, counts=counts, points=pts.astype(np.float32), session=ids)
         _atomic_write(self.dir / "scans.npz", buf.getvalue())
 
-    def load_scans(self) -> list[tuple[Pose, np.ndarray]]:
+    def _scans_npz(self):
         p = self.dir / "scans.npz"
-        if not p.is_file():
+        return np.load(io.BytesIO(p.read_bytes())) if p.is_file() else None
+
+    def load_scans(self) -> list[tuple[Pose, np.ndarray]]:
+        z = self._scans_npz()
+        if z is None:
             return []
-        z = np.load(io.BytesIO(p.read_bytes()))
         chunks = np.split(z["points"], np.cumsum(z["counts"])[:-1]) if len(z["counts"]) else []
         return [(Pose(*map(float, pose)), pts) for pose, pts in zip(z["poses"], chunks)]
+
+    def load_scan_ids(self) -> np.ndarray:
+        """Session id of each saved scan (all 0 for maps saved before sessions existed)."""
+        z = self._scans_npz()
+        if z is None:
+            return np.zeros(0, dtype=np.int32)
+        return z["session"] if "session" in z else np.zeros(len(z["counts"]), dtype=np.int32)
+
+    # -- Mapping sessions ---------------------------------------------------------------
+
+    def sessions(self) -> list[dict]:
+        """Mapping runs on this map, oldest first: {id, kind, started, status, scans, stitched, changes}.
+
+        status is "applied" (part of the map) or "pending" (waiting for its changes to be reviewed).
+        """
+        p = self.dir / "sessions.json"
+        if p.is_file():
+            return json.loads(p.read_text())
+        if (self.dir / "scans.npz").is_file():  # map saved before sessions existed
+            n = len(self.load_scan_ids())
+            return [{"id": 0, "kind": "map", "started": self.meta().get("saved", 0), "status": "applied", "scans": n,
+                     "stitched": False, "changes": []}]
+        return []
+
+    def save_sessions(self, sessions: list[dict]) -> None:
+        _atomic_write(self.dir / "sessions.json", json.dumps(sessions).encode())
+
+    def pending_session(self) -> dict | None:
+        return next((s for s in self.sessions() if s["status"] == "pending"), None)
 
     # -- Floor plan settings ------------------------------------------------------------
 

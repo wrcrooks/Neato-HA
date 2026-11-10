@@ -1,5 +1,5 @@
 // App-shell cache. API calls and the WebSocket always go to the network.
-const CACHE = "neato-rooms-v2";
+const CACHE = "neato-rooms-v3";
 const SHELL = ["./", "index.html", "style.css", "app.js", "manifest.webmanifest", "icon.svg"];
 
 self.addEventListener("install", (e) => {

@@ -3,7 +3,10 @@
 The Neato cloud shut down on Oct 6, 2025, and took the app, maps, zones and room cleaning with
 it. This project brings those back for Botvac **D3–D7**, fully local:
 
-* **Map** the house (auto-explore, or drive it yourself)
+* **Map** the house (auto-explore, or drive it yourself), in as many runs as you like: runs that
+  start away from the dock are **stitched** on, and a **re-scan** sharpens the map
+* **Review what changed** after each new scan (furniture added, removed or moved, newly mapped
+  area), keep or ignore each change, and preview the floor plan before applying it
 * **Label rooms**, draw cleaning **zones** and **no-go** areas
 * **Clean selected rooms/zones**, then return to the dock
 * A **floor plan** in the style of a real-estate listing: wall thicknesses, doors with swings,
@@ -26,6 +29,8 @@ planning, coverage and the UI. See [PLAN.md](PLAN.md) for the design and roadmap
   room gets ~96% coverage, and the robot docks again.
 * Floor plans from simulated maps get room sizes within a few cm, doors within ~5 cm and
   total area within ~1%, at any dock angle.
+* A separately mapped run is stitched onto the map to within a few cm, and a moved sofa and a
+  new armchair are reported as exactly those two changes.
 * **Not yet run on a real D7.** Hardware-dependent values (wheel base, LIDAR mounting/direction,
   docking hand-off) are configurable, and there is a calibration routine for them. See PLAN.md §6.
 

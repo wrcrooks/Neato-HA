@@ -67,13 +67,34 @@
   </section>
 
   <section class="panel hidden" id="tab-mapping">
+    <div id="review" class="review hidden">
+      <div class="row"><strong class="grow" id="review-title">Review changes</strong>
+        <div class="seg">
+          <button data-review-view="before" class="small">Before</button>
+          <button data-review-view="after" class="small active">After</button>
+        </div>
+      </div>
+      <p id="review-help" class="muted small"></p>
+      <div id="review-list" class="area-list"></div>
+      <div class="row">
+        <button id="btn-review-discard" class="danger grow">Discard scan</button>
+        <button id="btn-review-apply" class="primary grow">Apply to map</button>
+      </div>
+    </div>
     <div id="map-idle">
       <p class="muted">Put the robot on its dock first. The dock becomes the map origin.</p>
-      <label class="check"><input type="checkbox" id="extend-map"> Extend the existing map instead of starting over</label>
+      <label class="check"><input type="checkbox" id="extend-map"> Add to the existing map instead of starting over</label>
       <div class="row">
         <button id="btn-explore" class="primary grow">Auto-explore</button>
         <button id="btn-manual-map" class="grow">Drive it myself</button>
       </div>
+      <p class="muted small">Adding to the map works from anywhere: started away from the dock, the new part is
+        stitched on where it overlaps. Furniture moves it notices are listed for you to review.</p>
+      <div class="row">
+        <button id="btn-rescan" class="grow">Re-scan the house</button>
+      </div>
+      <p class="muted small">The robot revisits every room from the dock to sharpen the map and spot rearranged
+        furniture. Pick rooms on the <b>Clean</b> tab first to re-scan only those.</p>
       <div class="row">
         <button id="btn-setpose" class="grow">Set robot position</button>
         <button id="btn-delete-map" class="danger grow">Delete map</button>
@@ -125,6 +146,8 @@
 
   <section class="panel hidden" id="tab-plan">
     <p id="plan-summary" class="muted">No map yet.</p>
+    <label id="plan-preview-row" class="check hidden"><input type="checkbox" id="plan-preview" checked>
+      Preview with the changes being reviewed</label>
     <div class="row">
       <span class="muted small">Rotate</span>
       <button id="plan-rot-auto" class="small">Auto</button>
@@ -152,7 +175,7 @@
     <details>
       <summary>Sharpen the map</summary>
       <p class="muted small">Re-aligns every saved LIDAR scan against the whole map, which tightens walls seen from
-        several rooms. Mapping does this automatically; run it again after extending a map.
+        several rooms. Mapping does this automatically after every run.
         It can take a few minutes.</p>
       <div class="row"><button id="btn-refine" class="grow">Refine map</button></div>
     </details>

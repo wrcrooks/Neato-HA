@@ -1,6 +1,6 @@
 [project]
 name = "neato-rooms"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local mapping, rooms and zone cleaning for Neato Botvac D3-D7 via OpenNeato"
 requires-python = ">=3.10"
 license = { text = "MIT" }

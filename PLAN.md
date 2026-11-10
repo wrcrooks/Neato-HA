@@ -58,7 +58,17 @@ Why this split:
    are closed, doors are found as seen-through gaps between walls, and room sizes are measured
    wall to wall. The plan exports to SVG/PDF at a standard scale. Alignment and hidden faces
    are stored in the map frame.
-5. **Native fallbacks** — "Clean house", "Spot", "Dock" buttons pass straight through to the
+5. **Several mapping runs** — every run (new map, extension, re-scan) is a *session*; its
+   keyframes are kept, tagged with the session. A run that starts on the dock is placed on the
+   map there. One that starts anywhere else is mapped in its own frame, then stitched on by a
+   global search (FFT cross-correlation of wall points per heading, refined by scan matching;
+   refused when two placements fit equally well). After every run, all scans are refined
+   together and the new session is compared with the map: objects that appeared, disappeared or
+   moved (a disappearance paired with a same-sized appearance nearby) and newly mapped area.
+   The user keeps or ignores each change. The map is rebuilt from all applied sessions' scans,
+   which sharpens walls, with a newer session winning inside kept changes and the older map
+   inside ignored ones. Stitched runs are always reviewed, so a wrong fit can't slip in.
+6. **Native fallbacks** — "Clean house", "Spot", "Dock" buttons pass straight through to the
    robot's own firmware.
 
 ## 4. Repo layout
@@ -77,6 +87,7 @@ See README.md. In short: `neato_rooms/` is the Home Assistant add-on, and the Py
 | 4 | Planner, coverage, clean missions, return-to-dock | ✅ done in sim (~96% room coverage) |
 | 5 | HA add-on packaging | ✅ image builds and runs |
 | 5b | Map refinement + listing-style floor plan, SVG/PDF export | ✅ done in sim |
+| 5c | Multi-run maps: stitching, re-scan, change review | ✅ done in sim |
 | 6 | **On-robot calibration & tuning** (see §6) | together, once hardware is wired |
 | 7 | Later: schedules per room, HA entities/services, use robot's own `GetRobotPos` pose during native cleans | later |
 

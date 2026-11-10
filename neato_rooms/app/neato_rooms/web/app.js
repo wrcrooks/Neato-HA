@@ -17,12 +17,17 @@ const S = {
   view: { cx: 0, cy: 0, scale: 60, rot: 0 }, // px per metre; rot = plan alignment (map shown rotated by -rot)
   plan: null, // /api/floorplan
   planTap: "align",
+  review: null, // /api/review: changes found by the last scan, waiting to be applied
+  reviewKey: "",
+  reviewView: "after", // which map to show while reviewing
+  reviewFocus: null,
+  preview: null, // {msg, canvas}: the map with the pending scan applied
   fitted: false,
   connected: false,
 };
 
 const KIND_LABEL = { room: "Room", zone: "Zone", nogo: "No-go" };
-const MISSION_LABEL = { explore: "Exploring", manual_map: "Mapping", clean: "Cleaning", dock: "Docking", calibrate: "Calibrating", refine: "Refining map" };
+const MISSION_LABEL = { explore: "Exploring", manual_map: "Mapping", clean: "Cleaning", dock: "Docking", calibrate: "Calibrating", refine: "Refining map", rescan: "Re-scanning" };
 
 // ---------------------------------------------------------------------------
 // API
@@ -75,6 +80,7 @@ function connect() {
     else if (msg.type === "areas") { S.areas = msg.areas; pruneSelection(); renderAreas(); }
     else if (msg.type === "live") { S.live = msg; requestDraw(); }
     else if (msg.type === "floorplan") loadPlan();
+    else if (msg.type === "review") loadReview();
   };
 }
 
@@ -93,8 +99,15 @@ function setMap(msg) {
   $("#map-empty").classList.toggle("hidden", !msg.empty);
   // Mapping streams the map every couple of seconds; the plan is rebuilt once it settles.
   const m = S.status && S.status.mission;
-  if (!(m && m.status === "running")) loadPlan();
+  if (!(m && m.status === "running")) { loadPlan(); if (S.review) loadPreviewMap(); }
   if (msg.empty) { S.map = null; S.mapCanvas = null; requestDraw(); return; }
+  S.map = msg;
+  S.mapCanvas = mapCanvas(msg);
+  if (!S.fitted) { fit(); S.fitted = true; }
+  requestDraw();
+}
+
+function mapCanvas(msg) {
   const raw = atob(msg.data);
   const { width: w, height: h } = msg;
   const c = document.createElement("canvas");
@@ -115,10 +128,7 @@ function setMap(msg) {
     }
   }
   ctx.putImageData(img, 0, 0);
-  S.map = msg;
-  S.mapCanvas = c;
-  if (!S.fitted) { fit(); S.fitted = true; }
-  requestDraw();
+  return c;
 }
 
 // ---------------------------------------------------------------------------
@@ -202,16 +212,18 @@ function draw() {
   const r = canvas.getBoundingClientRect();
   ctx.clearRect(0, 0, r.width, r.height);
 
-  if (S.mapCanvas) {
-    const m = S.map;
+  const showPreview = S.review && S.reviewView === "after" && S.preview;
+  const [m, image] = showPreview ? [S.preview.msg, S.preview.canvas] : [S.map, S.mapCanvas];
+  if (image) {
     const [sx, sy] = toScreen(m.origin[0], m.origin[1] + m.height * m.resolution);
     ctx.imageSmoothingEnabled = false;
     ctx.save();
     ctx.translate(sx, sy);
     ctx.rotate(S.view.rot);
-    ctx.drawImage(S.mapCanvas, 0, 0, m.width * m.resolution * S.view.scale, m.height * m.resolution * S.view.scale);
+    ctx.drawImage(image, 0, 0, m.width * m.resolution * S.view.scale, m.height * m.resolution * S.view.scale);
     ctx.restore();
   }
+  if (S.review && S.tab === "mapping") drawChanges();
 
   // Areas
   ctx.font = "600 13px system-ui, sans-serif";
@@ -424,12 +436,15 @@ function renderStatus() {
     $("#mission-bar").style.width = `${Math.round((m.progress || 0) * 100)}%`;
     $("#btn-cancel").textContent = running ? "Stop" : "Dismiss";
   }
+  const rv = st && st.review;
+  const key = rv ? `${rv.session}:${rv.changes}:${rv.accepted}` : "";
+  if (key !== S.reviewKey) { S.reviewKey = key; loadReview(); }
   const manualMapping = running && m.kind === "manual_map";
   $("#map-idle").classList.toggle("hidden", !!manualMapping);
   $("#map-drive").classList.toggle("hidden", !manualMapping);
   if (S.wasRunning && !running) loadPlan();
   S.wasRunning = !!running;
-  $$("#map-idle button, #btn-clean, #btn-dock, [data-native], #btn-refine").forEach((b) => {
+  $$("#map-idle button, #btn-clean, #btn-dock, [data-native], #btn-refine, #review button").forEach((b) => {
     if (b.id === "btn-clean") b.disabled = running || S.selected.size === 0;
     else b.disabled = !!running;
   });
@@ -559,6 +574,7 @@ $$(".tabs button").forEach((b) => b.addEventListener("click", () => {
   $("#plan").classList.toggle("hidden", S.tab !== "plan");
   $$(".map-tools").forEach((t) => t.classList.toggle("hidden", S.tab === "plan"));
   if (S.tab === "plan") loadPlan();
+  requestDraw();
 }));
 
 $("#btn-clean").addEventListener("click", () => act(() => api("api/mission", {
@@ -574,6 +590,9 @@ function startMapping(kind) {
 }
 $("#btn-explore").addEventListener("click", () => startMapping("explore"));
 $("#btn-manual-map").addEventListener("click", () => startMapping("manual_map"));
+$("#btn-rescan").addEventListener("click", () => act(() => api("api/mission", {
+  body: { kind: "rescan", area_ids: [...S.selected].filter((id) => S.areas.some((a) => a.id === id && a.kind === "room")) },
+})));
 $("#btn-finish-map").addEventListener("click", () => act(() => api("api/drive", { body: { cmd: "finish" } })));
 $$("[data-drive]").forEach((b) => b.addEventListener("click", () => act(() => api("api/drive", {
   body: { cmd: b.dataset.drive, amount: Number(b.dataset.amount) },
@@ -608,7 +627,8 @@ async function loadPlan() {
   if (planLoading) return planLoading;
   planLoading = (async () => {
     try {
-      S.plan = await api("api/floorplan");
+      const preview = S.review && $("#plan-preview").checked;
+      S.plan = await api(preview ? "api/floorplan?preview=1" : "api/floorplan");
     } catch (e) {
       S.plan = null;
     }
@@ -705,6 +725,149 @@ $("#plan-title").addEventListener("change", savePlanSettings);
 $("#plan-units").addEventListener("change", savePlanSettings);
 $("#plan-paper").addEventListener("change", savePlanSettings);
 $("#btn-refine").addEventListener("click", () => act(() => api("api/mission", { body: { kind: "refine" } })));
+$("#plan-preview").addEventListener("change", loadPlan);
+
+// ---------------------------------------------------------------------------
+// Reviewing what a new scan changed
+
+async function loadReview() {
+  try {
+    S.review = await api("api/review");
+  } catch (e) {
+    S.review = null;
+  }
+  if (!S.review) { S.preview = null; S.reviewFocus = null; }
+  renderReview();
+  if (S.review) loadPreviewMap();
+  if (S.tab === "plan") loadPlan();
+  requestDraw();
+}
+
+async function loadPreviewMap() {
+  try {
+    const msg = await api("api/review/map");
+    S.preview = msg.empty ? null : { msg, canvas: mapCanvas(msg) };
+  } catch (e) {
+    S.preview = null;
+  }
+  requestDraw();
+}
+
+function fmtLen(m) {
+  const units = S.plan ? S.plan.settings.units : "imperial";
+  if (units === "metric") return `${m.toFixed(1)} m`;
+  const inches = Math.round(m * 39.3701);
+  return `${Math.floor(inches / 12)}′${inches % 12}″`;
+}
+
+function fmtArea(m2) {
+  const units = S.plan ? S.plan.settings.units : "imperial";
+  return units === "metric" ? `${m2.toFixed(1)} m²` : `${Math.round(m2 * 10.7639)} sq ft`;
+}
+
+function changeLabel(c) {
+  const size = `${fmtLen(c.dims_m[0])} × ${fmtLen(c.dims_m[1])}`;
+  if (c.kind === "moved") return `Moved ${fmtLen(c.distance_m)} (${size})`;
+  if (c.kind === "added") return `Something new (${size})`;
+  if (c.kind === "removed") return `Gone (${size})`;
+  return `Newly mapped area, ${fmtArea(c.size_m2)}`;
+}
+
+const CHANGE_COLOR = { added: "--chg-added", removed: "--chg-removed", moved: "--chg-removed", new_area: "--chg-area" };
+
+function renderReview() {
+  const r = S.review;
+  $("#review").classList.toggle("hidden", !r);
+  $("#plan-preview-row").classList.toggle("hidden", !r);
+  if (!r) return;
+  const n = r.changes.length;
+  $("#review-title").textContent = n ? `Review ${n} change${n > 1 ? "s" : ""}` : "Check the new scans";
+  $("#review-help").textContent = r.session.stitched && !n
+    ? "These scans were stitched on where they overlap the map. Switch between Before and After to check they line up, then apply them."
+    : "Red is what's gone, green is what's new, blue is newly mapped. Tap a change to find it on the map. Untick any to leave out, then apply. "
+      + "Every scan also sharpens the walls it saw again.";
+  $("#review-list").replaceChildren(...r.changes.map((c) => {
+    const div = document.createElement("div");
+    div.className = "area" + (c.accept ? "" : " off") + (S.reviewFocus === c.id ? " focus" : "");
+    const sw = document.createElement("span");
+    sw.className = "swatch";
+    sw.style.background = cssVar(c.kind === "moved" ? "--chg-added" : CHANGE_COLOR[c.kind]);
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = changeLabel(c);
+    const keep = document.createElement("input");
+    keep.type = "checkbox";
+    keep.checked = c.accept;
+    keep.title = "Apply this change to the map";
+    keep.setAttribute("aria-label", `Apply: ${changeLabel(c)}`);
+    keep.onclick = (e) => e.stopPropagation();
+    keep.onchange = () => act(() => api(`api/review/changes/${c.id}`, { body: { accept: keep.checked } }));
+    div.onclick = () => {
+      S.reviewFocus = c.id;
+      const [bx0, by0, bx1, by1] = c.to ? [Math.min(c.bbox[0], c.to.bbox[0]), Math.min(c.bbox[1], c.to.bbox[1]),
+        Math.max(c.bbox[2], c.to.bbox[2]), Math.max(c.bbox[3], c.to.bbox[3])] : c.bbox;
+      S.view.cx = (bx0 + bx1) / 2;
+      S.view.cy = (by0 + by1) / 2;
+      renderReview();
+      requestDraw();
+    };
+    div.append(sw, name, keep);
+    return div;
+  }));
+  const running = S.status && S.status.mission && S.status.mission.status === "running";
+  $$("#review button, #review input").forEach((b) => { b.disabled = !!running; });
+}
+
+function drawChanges() {
+  const res = S.map ? S.map.resolution : 0.05;
+  const px = Math.max(2, res * S.view.scale);
+  const dot = (pts) => {
+    for (const [x, y] of pts) {
+      const [sx, sy] = toScreen(x, y);
+      ctx.fillRect(sx - px / 2, sy - px / 2, px, px);
+    }
+  };
+  const box = ([x0, y0, x1, y1], pad) => polyPath([[x0 - pad, y0 - pad], [x1 + pad, y0 - pad], [x1 + pad, y1 + pad], [x0 - pad, y1 + pad]]);
+  for (const c of S.review.changes) {
+    ctx.globalAlpha = c.accept ? 0.75 : 0.25;
+    ctx.fillStyle = cssVar(CHANGE_COLOR[c.kind]);
+    dot(c.points);
+    if (c.to_points) { ctx.fillStyle = cssVar("--chg-added"); dot(c.to_points); }
+    ctx.globalAlpha = 1;
+    const focus = S.reviewFocus === c.id;
+    ctx.lineWidth = focus ? 3 : 1.5;
+    ctx.setLineDash(c.accept ? [] : [5, 4]);
+    ctx.strokeStyle = cssVar(CHANGE_COLOR[c.kind]);
+    box(c.bbox, 0.08);
+    ctx.stroke();
+    if (c.to) {
+      ctx.strokeStyle = cssVar("--chg-added");
+      box(c.to.bbox, 0.08);
+      ctx.stroke();
+      // Arrow from where it was to where it went.
+      const [ax, ay] = toScreen(c.x, c.y), [bx, by] = toScreen(c.to.x, c.to.y);
+      const ang = Math.atan2(by - ay, bx - ax);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.lineTo(bx - 10 * Math.cos(ang - 0.4), by - 10 * Math.sin(ang - 0.4));
+      ctx.moveTo(bx, by);
+      ctx.lineTo(bx - 10 * Math.cos(ang + 0.4), by - 10 * Math.sin(ang + 0.4));
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+}
+
+$$("[data-review-view]").forEach((b) => b.addEventListener("click", () => {
+  S.reviewView = b.dataset.reviewView;
+  $$("[data-review-view]").forEach((x) => x.classList.toggle("active", x === b));
+  requestDraw();
+}));
+$("#btn-review-apply").addEventListener("click", () => act(() => api("api/review/apply", { body: {} })));
+$("#btn-review-discard").addEventListener("click", () => {
+  if (confirm("Discard the new scans? The map stays as it was.")) act(() => api("api/review/discard", { body: {} }));
+});
 
 // ---------------------------------------------------------------------------
 

@@ -150,13 +150,45 @@ If your floor has stairs or drop-offs:
    configuration and restart the add-on.
 2. **Map.** Put the robot on its dock. **Map → Auto-explore** lets it find its own way. **Drive it
    myself** gives you arrow buttons. The dock becomes the map origin. The map saves when it
-   finishes.
+   finishes. It doesn't have to be done in one go: see below.
 3. **Rooms.** Open **Rooms → + Room** and tap the corners of each room. **+ Zone** and
    **+ No-go** are rectangles you drag.
 4. **Clean.** Tap rooms on the map (or in the list) → **Clean selected**. The robot leaves the
    dock, cleans each area in lanes, comes back, and hands over to its own docking routine.
 
 The robot's own **Whole house** and **Spot** cleaning are still under *Robot's own cleaning*.
+
+## Adding to the map, re-scanning and reviewing changes
+
+A map can be built and kept up to date over several runs. Each run's LIDAR scans are kept.
+
+* **Add to the map.** Tick **Add to the existing map** before **Auto-explore** or **Drive it
+  myself**. Started from the dock, the robot carries on from the saved map. Started anywhere
+  else (say the battery ran out last time, or a room it couldn't reach), it maps on its own
+  and **stitches** the new part on where the two overlap. Stitching needs some overlap: a
+  doorway and a bit of the room beyond it is plenty. If the new part fits in more than one
+  place (a bare rectangular room fits itself turned around, for example), the add-on refuses
+  rather than guess, and you should start the next run from somewhere already mapped.
+* **Running low.** If the battery gets low while exploring or re-scanning, the robot keeps what
+  it has mapped so far, docks, and you can carry on after charging.
+* **Re-scan the house.** The robot drives from the dock to spots about 1.5 m apart across the
+  whole mapped floor. Pick rooms on the **Clean** tab first to re-scan only those. More scans
+  of the same walls sharpen the map, and the floor plan with it.
+* **Review changes.** After adding to the map or re-scanning, the new scans are compared with
+  the map. The map stays as it was until you look at what changed under **Map → Review changes**:
+  * **red**: something that's gone (a sofa that's been moved away, a box that's been cleared),
+  * **green**: something new (a new armchair), and an arrow if it looks like the same thing
+    moved,
+  * **blue**: floor that wasn't on the map before.
+
+  Tap a change to find it on the map, and switch between **Before** and **After**. Untick
+  changes you don't want: a laundry basket left on the floor, say. **Plan → Preview with the
+  changes being reviewed** shows the floor plan as it will be. **Apply to map** merges the
+  scans (kept changes from the new scans, ignored ones from the old map). **Discard scan** throws
+  the new scans away. A stitched run is always shown for review, even with no changes, so you
+  can check it lines up. A run that finds nothing new is merged automatically.
+
+You can't start another run on the map until the last one has been reviewed.
 
 ## Floor plan
 
@@ -177,9 +209,9 @@ approximate interior area.
 
 Walls the robot never saw (behind a bed, say) are filled in by extending the walls it did see.
 Measurements are only as good as the map: a map that's blurred or doubled gives a worse plan.
-After mapping, the add-on re-aligns every scan against the whole map ("refining map"). This takes
-a minute or more on small hardware. You can run it again from **Plan → Sharpen the map** after
-extending a map.
+After every mapping run, the add-on re-aligns every scan against the whole map ("refining map").
+This takes a minute or more on small hardware. You can also run it from **Plan → Sharpen the
+map**.
 
 ## How it works
 

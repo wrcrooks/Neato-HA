@@ -1,5 +1,5 @@
 name: Neato Rooms
-version: "0.2.0"
+version: "0.3.0"
 slug: neato_rooms
 url: https://github.com/wrcrooks/Neato-HA
 description: Map your home, label rooms and clean single rooms or zones with a Neato Botvac D3–D7 (via OpenNeato)

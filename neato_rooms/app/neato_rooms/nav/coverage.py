@@ -96,3 +96,42 @@ def plan_lanes(
         ordered.append(ln)
         pos = ln.end
     return ordered
+
+
+def viewpoints(
+    cm: CostMap,
+    start: tuple[float, float],
+    spacing_m: float = 1.5,
+    polygons: list[list[list[float]]] | None = None,
+) -> list[tuple[float, float]]:
+    """Spots about `spacing_m` apart covering the reachable floor, in a short visiting order.
+
+    Used to re-scan a mapped house: from each spot the LIDAR sees everything within a few
+    metres. Each lattice square contributes its most central reachable cell, so narrow
+    hallways still get a spot.
+    """
+    ok = cm.traversable.copy()
+    if polygons:
+        inside = np.zeros(cm.shape, dtype=bool)
+        for poly in polygons:
+            inside |= rasterize_polygon(poly, cm.origin[0], cm.origin[1], cm.res, cm.shape)
+        ok &= inside
+    step = max(1, int(round(spacing_m / cm.res)))
+    pts = []
+    h, w = cm.shape
+    for y0 in range(0, h, step):
+        for x0 in range(0, w, step):
+            ys, xs = np.nonzero(ok[y0 : y0 + step, x0 : x0 + step])
+            if len(ys) < 4:
+                continue
+            c = (step - 1) / 2
+            i = int(np.argmin((ys - c) ** 2 + (xs - c) ** 2))
+            wx, wy = cm.to_world(x0 + xs[i], y0 + ys[i])
+            pts.append((float(wx), float(wy)))
+    # Greedy nearest-neighbour tour from the start.
+    order, here = [], start
+    while pts:
+        i = min(range(len(pts)), key=lambda k: math.dist(here, pts[k]))
+        here = pts.pop(i)
+        order.append(here)
+    return order

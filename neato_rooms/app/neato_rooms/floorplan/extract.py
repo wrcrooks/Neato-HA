@@ -54,6 +54,10 @@ class Face:
         c, s = math.cos(self.angle), math.sin(self.angle)
         return (u * c - v * s, u * s + v * c)
 
+    def to_uv(self, x: float, y: float) -> tuple[float, float]:
+        c, s = math.cos(self.angle), math.sin(self.angle)
+        return (x * c + y * s, -x * s + y * c)
+
     @property
     def a(self):
         return self.to_xy(self.u0, self.v)
@@ -543,6 +547,7 @@ def _classify_furniture(faces: list[Face], gv: _GridView) -> None:
     """A face with the same-facing wall behind it (seen, or hidden behind this very object)
     and unseen space in between is the front of furniture: sofa, bed, cabinet."""
     spans = {id(g): _unseen_span(g, gv) for g in faces}
+    footprints = []  # (front face, depth to the wall behind it)
     for f in faces:
         if f.side == 0 or _has_wall_partner(f, faces):
             continue
@@ -559,7 +564,17 @@ def _classify_furniture(faces: list[Face], gv: _GridView) -> None:
             strip = np.concatenate([_samples(f, back * dv) for dv in np.arange(0.1, d - 0.05, 0.1)] or [np.zeros((0, 2))])
             if gv.free_fraction(strip) < 0.5:
                 f.kind, f.visible = "furniture", False
+                footprints.append((f, d))
                 break
+    # Its ends are too: the short sides running back from the front to the wall.
+    for f, d in footprints:
+        lo_v, hi_v = sorted((f.v, f.v - f.side * d))
+        for g in faces:
+            if g.kind == "furniture" or abs(abs(math.remainder(g.angle - f.angle, math.pi)) - math.pi / 2) > 1e-3:
+                continue
+            ends = [f.to_uv(*g.a), f.to_uv(*g.b)]
+            if all(f.u0 - 0.1 <= u <= f.u1 + 0.1 and lo_v - 0.1 <= v <= hi_v + 0.1 for u, v in ends):
+                g.kind, g.visible = "furniture", False
     # The back of a piece of furniture is furniture too (e.g. a sofa seen from behind).
     for f in faces:
         if f.kind == "furniture" or f.side == 0 or _has_wall_partner(f, faces):

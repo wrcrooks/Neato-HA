@@ -41,7 +41,7 @@ class AreaPatch(BaseModel):
 
 
 class MissionIn(BaseModel):
-    kind: str  # explore | manual_map | clean | dock | calibrate
+    kind: str  # explore | manual_map | rescan | clean | dock | calibrate | refine
     area_ids: list[str] = Field(default_factory=list)
     new_map: bool = True
     passes: int = 1
@@ -66,6 +66,10 @@ class AlignIn(BaseModel):
 
 class ToggleIn(BaseModel):
     face_id: int
+
+
+class DecisionIn(BaseModel):
+    accept: bool
 
 
 class PoseIn(BaseModel):
@@ -144,6 +148,8 @@ def create_app(cfg: Config, service: Service | None = None) -> FastAPI:
             kw = {"area_ids": m.area_ids, "passes": max(1, min(m.passes, 3))}
         elif m.kind in ("explore", "manual_map"):
             kw = {"new_map": m.new_map}
+        elif m.kind == "rescan":
+            kw = {"area_ids": m.area_ids}
         elif m.kind not in ("dock", "calibrate", "refine"):
             bad(f"unknown mission {m.kind}")
         try:
@@ -180,11 +186,68 @@ def create_app(cfg: Config, service: Service | None = None) -> FastAPI:
         await svc.broadcast(svc.map_message())
         return {"ok": True}
 
+    # -- Reviewing the changes a new scan found -----------------------------------------------
+
+    async def review_changed():
+        await svc.broadcast({"type": "review"})
+        await svc.broadcast({"type": "status", **svc.snapshot()})
+
+    @app.get("/api/review")
+    async def get_review():
+        """The last scan's changes waiting for review, or null."""
+        return svc.review()
+
+    @app.get("/api/review/map")
+    async def review_map():
+        """The map as it would be with the pending scan applied (same shape as /api/map).
+
+        With nothing to review, the saved map.
+        """
+        grid = await svc.preview_grid()
+        return svc.map_message() if grid is None else {"type": "map", **grid.export()}
+
+    @app.post("/api/review/changes/{change_id}")
+    async def decide(change_id: int, d: DecisionIn):
+        try:
+            out = svc.review_decide(change_id, d.accept)
+        except LookupError as e:
+            bad(e, 404)
+        await review_changed()
+        return out
+
+    @app.post("/api/review/apply")
+    async def apply_review():
+        try:
+            await svc.apply_review()
+        except LookupError as e:
+            bad(e, 404)
+        except RuntimeError as e:
+            bad(e, 409)
+        await review_changed()
+        return {"ok": True}
+
+    @app.post("/api/review/discard")
+    async def discard_review():
+        try:
+            await svc.discard_review()
+        except LookupError as e:
+            bad(e, 404)
+        except RuntimeError as e:
+            bad(e, 409)
+        await review_changed()
+        return {"ok": True}
+
+    @app.get("/api/sessions")
+    async def sessions():
+        """Mapping runs that make up the map, oldest first."""
+        return [{k: v for k, v in x.items() if k != "changes"} | {"changes": len(x["changes"])}
+                for x in svc.store.sessions()]
+
     # -- Floor plan -------------------------------------------------------------------
 
-    async def plan_or_404():
+    async def plan_or_404(preview: bool = False):
         try:
-            return await svc.floorplan()
+            return await svc.floorplan(preview)
         except LookupError as e:
             bad(e, 404)
 
@@ -193,8 +256,8 @@ def create_app(cfg: Config, service: Service | None = None) -> FastAPI:
         await svc.broadcast({"type": "floorplan", "rotation": plan.rotation})
 
     @app.get("/api/floorplan")
-    async def get_floorplan():
-        plan = await plan_or_404()
+    async def get_floorplan(preview: bool = False):
+        plan = await plan_or_404(preview)
         settings = svc.store.floorplan_settings()
         out = plan.as_dict()
         units = settings["units"]

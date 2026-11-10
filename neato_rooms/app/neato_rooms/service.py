@@ -13,13 +13,15 @@ from .calibrate import calibrate
 from .config import Config
 from .floorplan import FloorPlan, extract, face_override, layout, same_override, to_pdf, to_svg
 from .geometry import Pose, wrap_angle
-from .nav.coverage import plan_lanes
+from .nav.coverage import plan_lanes, viewpoints
 from .nav.frontier import choose_goal
 from .navigator import Blocked, Cancelled, Navigator
 from .robot import Robot, RobotError, RobotStatus, make_robot
 from .slam.grid import OccupancyGrid
 from .slam.mapper import Mapper
 from .slam.refine import build_grid, refine
+from .slam.sessions import (align_session, change_record, compose, describe, detect_changes, from_record,
+                            transform_keyframes)
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -27,6 +29,11 @@ log = logging.getLogger(__name__)
 UNDOCK_M = 0.4
 DOCK_APPROACH = (0.45, 0.0)  # in front of the dock, map frame
 LOW_BATTERY = 15
+RESCAN_SPACING_M = 1.5
+
+
+class LowBattery(Blocked):
+    pass
 MAP_PUSH_INTERVAL_S = 1.5
 
 
@@ -59,8 +66,10 @@ class Service:
         self._drive_q: asyncio.Queue[tuple[str, float]] = asyncio.Queue()
         self.map_dirty = False  # unsaved mapping changes
         self.calibration: dict | None = None
-        self._fp_cache: tuple[str, FloorPlan] | None = None
+        self._fp_cache: dict[bool, tuple[str, FloorPlan]] = {}
         self._fp_lock = asyncio.Lock()
+        self._session: dict | None = None  # the mapping run in progress
+        self._preview: tuple[str, OccupancyGrid] | None = None
 
     # -- Lifecycle -----------------------------------------------------------------
 
@@ -112,6 +121,7 @@ class Service:
             "map_dirty": self.map_dirty,
             "backend": self.cfg.robot,
             "calibration": self.calibration,
+            "review": self._review_summary(),
         }
 
     def live(self) -> dict:
@@ -151,6 +161,7 @@ class Service:
             "dock": self._go_dock,
             "calibrate": self._calibrate,
             "refine": self._refine,
+            "rescan": self._rescan,
         }[kind]
         self.mission = MissionInfo(kind=kind, areas=list(kw.get("area_ids", [])))
         self.nav.cancel_event.clear()
@@ -235,25 +246,21 @@ class Service:
             await self.nav._after_move(await self.robot.forward(UNDOCK_M, self.cfg.speed_mm_s // 2))
 
     async def _explore(self, new_map: bool = True, max_goals: int = 200) -> None:
-        if new_map:
-            self.mapper.grid = OccupancyGrid(self.cfg.map_resolution_m, self.cfg.map_size_m)
-            self.mapper.set_pose(Pose())
-            self.nav.state.visited.clear()
-        self.mapper.keyframes = [] if new_map else self.store.load_scans()
+        await self._start_session("explore", new_map)
         self.nav.state.obstacles.clear()
-        await self._enter_manual()
-        self.mapper.mapping = True
-        self.map_dirty = True
-        if not new_map:
-            await self._start_from_dock_or_relocalize()
         await self.nav.sense()
         await self._undock()
         for _ in range(4):  # look around once
             await self.nav._after_move(await self.robot.rotate(math.pi / 2, 120))
         tried: list[tuple[float, float]] = []
+        note = "exploration finished"
         for i in range(max_goals):
             self.nav.check_cancel()
-            await self._check_battery()
+            try:
+                await self._check_battery()
+            except LowBattery as e:
+                note = f"{e}; the map so far is kept, extend it after charging"
+                break
             cm = self.nav.costmap()
             goal = await asyncio.to_thread(choose_goal, cm, (self.mapper.pose.x, self.mapper.pose.y), tried)
             if goal is None:
@@ -261,25 +268,13 @@ class Service:
             tried.append(goal)
             await self._set_message(f"exploring (goal {i + 1})")
             await self.nav.go_to(*goal, tol=0.2)
-        await self._set_message("exploration finished, returning to dock")
-        self.store.save_grid(self.mapper.grid)
-        self.store.save_scans(self.mapper.keyframes)
-        self.map_dirty = False
-        await self.broadcast(self.map_message())
+        await self._set_message(f"{note}, returning to dock")
+        await self._finish_session()
         await self._return_and_dock()
-        await self._refine_keyframes(self.mapper.keyframes)
+        await self._after_session()
 
     async def _manual_map(self, new_map: bool = True) -> None:
-        if new_map:
-            self.mapper.grid = OccupancyGrid(self.cfg.map_resolution_m, self.cfg.map_size_m)
-            self.mapper.set_pose(Pose())
-            self.nav.state.visited.clear()
-        self.mapper.keyframes = [] if new_map else self.store.load_scans()
-        await self._enter_manual()
-        self.mapper.mapping = True
-        self.map_dirty = True
-        if not new_map:
-            await self._start_from_dock_or_relocalize()
+        await self._start_session("manual", new_map)
         await self.nav.sense()
         await self.broadcast(self.map_message())
         await self._set_message("drive the robot around with the arrows; press Finish when done")
@@ -301,13 +296,156 @@ class Service:
             else:
                 continue
             await self.nav._after_move(res)
-        self.store.save_grid(self.mapper.grid)
-        self.store.save_scans(self.mapper.keyframes)
-        self.map_dirty = False
-        await self.broadcast(self.map_message())
+        await self._finish_session()
         await self.robot.set_manual(False)
-        await self._refine_keyframes(self.mapper.keyframes)
-        await self._set_message("map saved")
+        await self._after_session()
+
+    async def _rescan(self, area_ids: list[str] | None = None) -> None:
+        """Re-visit the mapped floor to sharpen the map and pick up rearranged furniture."""
+        if not self.store.has_map():
+            raise Blocked("no map yet — map the house first")
+        polys = [self.store.get_area(a)["polygon"] for a in area_ids or []]
+        await self._start_session("rescan", new_map=False, stitch=False)
+        self.nav.state.obstacles.clear()
+        await self.nav.sense()
+        await self._undock()
+        spots = await asyncio.to_thread(
+            viewpoints, self.nav.costmap(), (self.mapper.pose.x, self.mapper.pose.y), RESCAN_SPACING_M, polys or None
+        )
+        note = "re-scan finished"
+        for i, spot in enumerate(spots):
+            self.nav.check_cancel()
+            try:
+                await self._check_battery()
+            except LowBattery as e:
+                note = f"{e}; the part re-scanned so far is kept"
+                break
+            await self._set_message(f"re-scanning ({i + 1}/{len(spots)})", 0.9 * i / max(len(spots), 1))
+            await self.nav.go_to(*spot, tol=0.3)
+        await self._set_message(f"{note}, returning to dock")
+        await self._finish_session()
+        await self._return_and_dock()
+        await self._after_session()
+
+    # -- Mapping sessions ------------------------------------------------------------------
+
+    async def _start_session(self, kind: str, new_map: bool, stitch: bool = True) -> None:
+        """Set up the mapper for a mapping run and enter manual mode.
+
+        Extending: the robot is placed on the saved map from the dock. Started anywhere else
+        (or if that fails), a run that allows `stitch` is mapped on its own and stitched onto
+        the map when it ends; a re-scan instead relocalises near the last known pose.
+        """
+        if new_map:
+            self.mapper.grid = OccupancyGrid(self.cfg.map_resolution_m, self.cfg.map_size_m)
+            self.mapper.set_pose(Pose())
+            self.mapper.keyframes = []
+            self.nav.state.visited.clear()
+            self._session = {"id": 0, "kind": kind, "started": time.time(), "base": 0, "detached": False}
+        else:
+            if self.store.pending_session():
+                raise Blocked("review the changes from the last scan first (Map → Review changes)")
+            if not self.store.has_map():
+                raise Blocked("no map to extend — start a new one")
+            kfs = self.store.load_scans()
+            if not kfs:
+                raise Blocked("this map was saved without its scans, so it can't be extended — start a new map")
+            sid = max(x["id"] for x in self.store.sessions()) + 1
+            self.mapper.grid = self.store.load_grid()
+            self.mapper.keyframes = list(kfs)
+            self._session = {"id": sid, "kind": kind, "started": time.time(), "base": len(kfs), "detached": False}
+        await self._enter_manual()
+        self.mapper.mapping = True
+        self.map_dirty = True
+        if new_map:
+            return
+        try:
+            # Off the dock, a quick match near the last known pose can lock onto the wrong spot;
+            # a mapping run that starts there is mapped on its own and stitched on reliably later.
+            if stitch and not self.status.on_dock:
+                raise Blocked("not on the dock")
+            await self._start_from_dock_or_relocalize()
+        except Blocked:
+            if not stitch:
+                raise
+            # Map this run on its own; it's stitched onto the map when it ends.
+            self._session.update(detached=True, base=0)
+            self.mapper.grid = OccupancyGrid(self.cfg.map_resolution_m, self.cfg.map_size_m)
+            self.mapper.set_pose(Pose())
+            self.mapper.keyframes = []
+            self.nav.state.visited.clear()
+            self.mapper.reset_odometry(await self.robot.odometry())
+            await self._set_message("couldn't place the robot on the map; mapping on its own, to stitch on afterwards")
+
+    async def _finish_session(self) -> None:
+        """Save this run's scans (robot still in manual mode, wherever it is).
+
+        A new map is saved as is. An extension or re-scan is saved as *pending*: the map
+        stays as it was until its changes are reviewed. A run mapped on its own is first
+        stitched onto the map, and the robot's pose moved into the map frame.
+        """
+        sess = self._session
+        new = self.mapper.keyframes[sess["base"]:]
+        record = {"id": sess["id"], "kind": sess["kind"], "started": sess["started"], "status": "applied",
+                  "scans": len(new), "stitched": sess["detached"], "changes": []}
+        if sess["id"] == 0:
+            self.store.save_grid(self.mapper.grid)
+            self.store.save_scans(new, [0] * len(new))
+            self.store.save_sessions([record])
+        else:
+            kfs, ids = self.store.load_scans(), list(self.store.load_scan_ids())
+            if sess["detached"]:
+                await self._set_message("stitching the new scans onto the map")
+                found = await asyncio.to_thread(align_session, self.cfg, self.store.load_grid(), new)
+                if found is None:
+                    raise Blocked("couldn't stitch the new scans onto the map: they don't overlap it enough. "
+                                  "Start the next run from the dock, or somewhere already mapped")
+                t, overlap = found
+                log.info("stitched session %d: %s (overlap %.2f)", sess["id"], t, overlap)
+                new = transform_keyframes(new, t)
+                self.mapper.set_pose(t.compose(self.mapper.pose))
+                st = self.nav.state
+                st.visited = [(p.x, p.y) for p in (t.compose(Pose(x, y)) for x, y in st.visited)]
+                st.obstacles = [(p.x, p.y) for p in (t.compose(Pose(x, y)) for x, y in st.obstacles)]
+                self.mapper.keyframes = new
+                self.mapper.grid = await asyncio.to_thread(build_grid, self.cfg, kfs + new)
+                await self.broadcast(self.map_message())
+            self.store.save_scans(kfs + new, ids + [sess["id"]] * len(new))
+            self.store.save_sessions(self.store.sessions() + [{**record, "status": "pending"}])
+        self.map_dirty = False
+
+    async def _after_session(self) -> None:
+        """With the robot idle: refine every scan, then look for changes in the new run."""
+        await self._refine_stored()
+        pend = self.store.pending_session()
+        if not pend:
+            self.mission.message = "map saved"
+            return
+        await self._set_message("looking for changes", 1.0)
+        kfs, ids = self.store.load_scans(), self.store.load_scan_ids()
+        applied = [x for x in self.store.sessions() if x["status"] == "applied"]
+
+        def work():
+            before = compose(self.cfg, kfs, ids, applied)
+            after = build_grid(self.cfg, [k for k, i in zip(kfs, ids) if i == pend["id"]])
+            return detect_changes(before, after)
+
+        changes = await asyncio.to_thread(work)
+        sessions = self.store.sessions()
+        for x in sessions:
+            if x["id"] == pend["id"]:
+                x["changes"] = [change_record(n, c) for n, c in enumerate(changes)]
+        self.store.save_sessions(sessions)
+        if not changes and not pend["stitched"]:
+            await self.apply_review()
+            self.mission.message = "no changes found; the new scans sharpened the map"
+        elif not changes:
+            # A stitched run is always checked: a wrong fit would garble the map.
+            self.mission.message = "new scans stitched onto the map — check they line up under Map → Review changes"
+        else:
+            self.mission.message = (f"{len(changes)} change{'s' if len(changes) > 1 else ''} found — "
+                                    "review them under Map → Review changes")
+        await self.broadcast({"type": "review"})
 
     def drive(self, cmd: str, amount: float = 0.0) -> None:
         if not (self.busy and self.mission and self.mission.kind == "manual_map"):
@@ -323,7 +461,7 @@ class Service:
     async def _check_battery(self) -> None:
         st = self.status = await self.robot.status()
         if st.battery is not None and st.battery < LOW_BATTERY:
-            raise Blocked(f"battery low ({st.battery}%) — dock and recharge")
+            raise LowBattery(f"battery low ({st.battery}%) — dock and recharge")
 
     async def _clean(self, area_ids: list[str], passes: int = 1) -> None:
         if not self.store.has_map():
@@ -372,18 +510,20 @@ class Service:
         await self._return_and_dock()
 
     async def _refine(self) -> None:
-        kfs = self.store.load_scans()
-        if len(kfs) < 3:
+        if self.store.pending_session():
+            raise Blocked("review the changes from the last scan first (Map → Review changes)")
+        if len(self.store.load_scans()) < 3:
             raise Blocked("no scans saved for this map — map the house again to refine it")
         self.mapper.grid = self.store.load_grid() or self.mapper.grid
-        await self._refine_keyframes(kfs)
+        await self._refine_stored()
         self.mission.message = "map refined"
 
-    async def _refine_keyframes(self, kfs: list) -> None:
-        """Re-align every scan against the whole map, then rebuild and save the map.
+    async def _refine_stored(self) -> None:
+        """Re-align every saved scan against the whole map, then rebuild and save the map.
 
         Runs with the robot idle (docked / out of TestMode): it takes a while on small hardware.
         """
+        kfs, ids = self.store.load_scans(), self.store.load_scan_ids()
         if len(kfs) < 3:
             return
         loop = asyncio.get_running_loop()
@@ -394,7 +534,6 @@ class Service:
 
         await self._set_message("refining map", 0.0)
         new, info = await asyncio.to_thread(refine, self.cfg, kfs, progress=progress)
-        grid = await asyncio.to_thread(build_grid, self.cfg, new)
         log.info("map refined: %s", info)
         # Keep the robot where it is relative to the corrected scans.
         (old_last, _), (new_last, _) = kfs[-1], new[-1]
@@ -402,13 +541,95 @@ class Service:
         c, s = math.cos(-old_last.theta), math.sin(-old_last.theta)
         dx, dy = p.x - old_last.x, p.y - old_last.y
         rel = Pose(c * dx - s * dy, s * dx + c * dy, wrap_angle(p.theta - old_last.theta))
-        grid.version = self.mapper.grid.version + 1
-        self.mapper.grid = grid
         self.mapper.keyframes = new
         self.mapper.set_pose(new_last.compose(rel))
+        self.store.save_scans(new, ids)
+        await self._rebuild_map()
+
+    async def _rebuild_map(self) -> None:
+        """The saved map = every applied session's scans, with their change decisions."""
+        kfs, ids = self.store.load_scans(), self.store.load_scan_ids()
+        applied = [x for x in self.store.sessions() if x["status"] == "applied"]
+        if not kfs or not applied:
+            return
+        grid = await asyncio.to_thread(compose, self.cfg, kfs, ids, applied)
+        grid.version = self.mapper.grid.version + 1
+        self.mapper.grid = grid
         self.store.save_grid(grid)
-        self.store.save_scans(new)
+        self._preview = None
         await self.broadcast(self.map_message())
+
+    # -- Reviewing a scan's changes -----------------------------------------------------------
+
+    def _review_summary(self) -> dict | None:
+        p = self.store.pending_session()
+        if not p:
+            return None
+        return {"session": p["id"], "kind": p["kind"], "changes": len(p["changes"]),
+                "accepted": sum(c["accept"] for c in p["changes"])}
+
+    def review(self) -> dict | None:
+        """The pending scan's changes, described for the UI (map frame)."""
+        p = self.store.pending_session()
+        if not p:
+            return None
+        geo = self.mapper.grid  # every grid has the same cell layout
+        changes = [{"id": c["id"], "accept": c["accept"], **describe(from_record(c), geo)} for c in p["changes"]]
+        session = {k: v for k, v in p.items() if k != "changes"}
+        return {"session": session, "changes": changes}
+
+    def review_decide(self, change_id: int, accept: bool) -> dict:
+        sessions = self.store.sessions()
+        p = next((x for x in sessions if x["status"] == "pending"), None)
+        if not p:
+            raise LookupError("nothing to review")
+        for c in p["changes"]:
+            if c["id"] == change_id:
+                c["accept"] = bool(accept)
+                self.store.save_sessions(sessions)
+                return {"id": change_id, "accept": c["accept"]}
+        raise KeyError(f"no change {change_id}")
+
+    async def preview_grid(self) -> OccupancyGrid:
+        """The map as it would be with the pending scan applied, as currently decided."""
+        p = self.store.pending_session()
+        if not p:
+            return self.store.load_grid()
+        key = json.dumps([self.store.meta().get("saved"), p["id"], [c["accept"] for c in p["changes"]]])
+        if self._preview and self._preview[0] == key:
+            return self._preview[1]
+        kfs, ids = self.store.load_scans(), self.store.load_scan_ids()
+        use = [x for x in self.store.sessions() if x["status"] == "applied" or x["id"] == p["id"]]
+        grid = await asyncio.to_thread(compose, self.cfg, kfs, ids, use)
+        self._preview = (key, grid)
+        return grid
+
+    async def apply_review(self) -> None:
+        """Merge the pending scan into the map, honouring each change's accept / reject."""
+        if self.busy and not (self.mission and self.mission.kind in ("explore", "manual_map", "rescan")):
+            raise RuntimeError("stop the current mission first")
+        sessions = self.store.sessions()
+        p = next((x for x in sessions if x["status"] == "pending"), None)
+        if not p:
+            raise LookupError("nothing to review")
+        p["status"] = "applied"
+        self.store.save_sessions(sessions)
+        await self._rebuild_map()
+
+    async def discard_review(self) -> None:
+        """Drop the pending scan entirely: its scans are deleted and the map is unchanged."""
+        if self.busy:
+            raise RuntimeError("stop the current mission first")
+        sessions = self.store.sessions()
+        p = next((x for x in sessions if x["status"] == "pending"), None)
+        if not p:
+            raise LookupError("nothing to review")
+        kfs, ids = self.store.load_scans(), self.store.load_scan_ids()
+        keep = [i for i, sid in enumerate(ids) if sid != p["id"]]
+        self.store.save_scans([kfs[i] for i in keep], [int(ids[i]) for i in keep])
+        self.store.save_sessions([x for x in sessions if x["id"] != p["id"]])
+        self.mapper.keyframes = [kfs[i] for i in keep]
+        self._preview = None
 
     async def _calibrate(self) -> None:
         await self._enter_manual()
@@ -464,7 +685,8 @@ class Service:
         self.store.delete_map()
         self.mapper.grid = OccupancyGrid(self.cfg.map_resolution_m, self.cfg.map_size_m)
         self.mapper.keyframes = []
-        self._fp_cache = None
+        self._fp_cache = {}
+        self._preview = None
         self.mapper.set_pose(Pose())
         self.map_dirty = False
 
@@ -473,19 +695,25 @@ class Service:
 
     # -- Floor plan -------------------------------------------------------------------
 
-    async def floorplan(self) -> FloorPlan:
-        """The listing-style plan of the saved map (cached until the map or settings change)."""
+    async def floorplan(self, preview: bool = False) -> FloorPlan:
+        """The listing-style plan of the saved map (cached until the map or settings change).
+
+        preview: the plan as it would be with the pending scan's changes applied.
+        """
         if not self.store.has_map():
             raise LookupError("no map yet — map the house first")
         s = self.store.floorplan_settings()
         rooms = [a for a in self.store.areas if a["kind"] == "room"]
-        key = json.dumps([self.store.meta().get("saved"), s["rotation"], s["overrides"], rooms], sort_keys=True)
+        p = self.store.pending_session() if preview else None
+        decisions = [p["id"], [c["accept"] for c in p["changes"]]] if p else None
+        key = json.dumps([self.store.meta().get("saved"), s["rotation"], s["overrides"], rooms, decisions], sort_keys=True)
         async with self._fp_lock:
-            if self._fp_cache and self._fp_cache[0] == key:
-                return self._fp_cache[1]
-            grid = self.store.load_grid()
+            hit = self._fp_cache.get(preview)
+            if hit and hit[0] == key:
+                return hit[1]
+            grid = await self.preview_grid() if p else self.store.load_grid()
             plan = await asyncio.to_thread(extract, grid, rooms, s["rotation"], s["overrides"])
-            self._fp_cache = (key, plan)
+            self._fp_cache[preview] = (key, plan)
             return plan
 
     async def floorplan_export(self, fmt: str) -> bytes:
